@@ -1,0 +1,139 @@
+name: DAST-AI Security Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target URL aplikasi yang akan dipindai (harus terdaftar di ALLOWED_HOSTS)'
+        required: false
+        default: 'http://127.0.0.1:8081'
+      framework:
+        description: 'Framework aplikasi target (mis. fastapi, node-express, laravel, django)'
+        required: false
+        default: 'fastapi'
+      fail_on:
+        description: 'Ambang batas tingkat keparahan untuk menggagalkan pipeline CI'
+        required: false
+        default: 'high'
+        type: choice
+        options:
+          - critical
+          - high
+          - medium
+          - any
+          - none
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  unit-tests:
+    name: 🧪 Unit & Guardrail Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest httpx
+
+      - name: Run Test Suite
+        run: |
+          pytest -v
+
+  dast-scan:
+    name: 🛡️ DAST Scan & AI Triage
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Start Mock Target App
+        run: |
+          python tests/mock_target.py 8081 &
+          sleep 2
+          curl -s http://127.0.0.1:8081/health || (echo "Target app failed to start" && exit 1)
+          echo "Mock target app is running on http://127.0.0.1:8081"
+
+      - name: Start OWASP ZAP Daemon
+        run: |
+          docker run -d --name zap --network host \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap.sh -daemon -host 127.0.0.1 -port 8090 \
+            -config api.key=ci-zap-secret-key \
+            -config api.addrs.addr.name=.* \
+            -config api.addrs.addr.regex=true
+
+          echo "Waiting for OWASP ZAP daemon to respond on port 8090..."
+          timeout 60 bash -c 'until curl -s "http://127.0.0.1:8090/JSON/core/view/version/?apikey=ci-zap-secret-key" > /dev/null; do sleep 2; done'
+          echo "OWASP ZAP daemon is online and ready!"
+
+      - name: Start DAST-AI Orchestrator
+        env:
+          ENVIRONMENT: staging
+          ALLOWED_HOSTS: '["127.0.0.1", "localhost"]'
+          REQUIRE_PRIVATE_IP: "true"
+          ZAP_URL: "http://127.0.0.1:8090"
+          ZAP_API_KEY: "ci-zap-secret-key"
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: "claude-sonnet-5-5"
+          THREADS_PER_HOST: "2"
+          DELAY_MS: "100"
+          MAX_SPIDER_MINUTES: "1"
+          MAX_SCAN_MINUTES: "2"
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          sleep 3
+          curl -s http://127.0.0.1:8000/health || (echo "Orchestrator failed to start" && exit 1)
+          echo "DAST-AI Orchestrator is running on http://127.0.0.1:8000"
+
+      - name: Run DAST-AI CI Scanner
+        run: |
+          TARGET_URL="${{ github.event.inputs.target_url || 'http://127.0.0.1:8081' }}"
+          FRAMEWORK="${{ github.event.inputs.framework || 'fastapi' }}"
+          FAIL_ON="${{ github.event.inputs.fail_on || 'high' }}"
+
+          python scripts/ci_scan.py \
+            --target-url "$TARGET_URL" \
+            --framework "$FRAMEWORK" \
+            --api-url "http://127.0.0.1:8000" \
+            --fail-on "$FAIL_ON" \
+            --poll-interval 3 \
+            --timeout 300 \
+            --output-json dast-report.json \
+            --output-md dast-report.md
+
+      - name: Upload Security Report Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-ai-security-reports
+          path: |
+            dast-report.json
+            dast-report.md

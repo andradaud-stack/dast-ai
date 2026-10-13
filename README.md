@@ -143,3 +143,88 @@ curl http://localhost:8000/scans/a1b2c3d4e5f6
 ```
 
 Saat selesai (`done`), field `report` akan berisi total alert terdeteksi, ringkasan triase (*true positive*, *false positive*, *needs review*), serta detail setiap temuan beserta rekomendasi patch perbaikan kodenya.
+
+---
+
+## Integrasi CI/CD (GitHub Actions)
+
+DAST-AI dilengkapi dengan integrasi **GitHub Actions** (`.github/workflows/dast-ci.yml`) dan CLI runner otomatis (`scripts/ci_scan.py`) untuk memindai aplikasi web secara otomatis setiap kali ada `push` atau `pull request`.
+
+### 1. Konfigurasi Repository Secrets di GitHub
+
+Untuk mengaktifkan triase AI menggunakan Anthropic Claude di pipeline GitHub Actions:
+1. Masuk ke repositori GitHub Anda: **Settings** > **Secrets and variables** > **Actions**.
+2. Klik tombol **New repository secret**.
+3. Buat secret baru:
+   - **Name**: `LLM_API_KEY`
+   - **Value**: Masukkan Anthropic API key Anda (`sk-ant-...`).
+
+*(Catatan: Jika `LLM_API_KEY` belum disetel atau pada PR eksternal, sistem secara otomatis beralih ke mode rule-based triage fallback tanpa membatalkan pengujian).*
+
+### 2. Alur Kerja Pipeline CI/CD
+
+Pipeline GitHub Actions terdiri dari 2 tahapan (jobs):
+
+```mermaid
+flowchart LR
+    A["Push / Pull Request"] --> B["Job 1: Unit & Guardrail Tests<br/>(pytest -v)"]
+    B --> C["Job 2: DAST Scan & AI Triage"]
+    C --> D["Start Target & ZAP Daemon<br/>(Docker --network host)"]
+    D --> E["Start DAST-AI Orchestrator"]
+    E --> F["Execute scripts/ci_scan.py"]
+    F --> G["Publish GitHub Step Summary<br/>& Upload Artifacts"]
+    G --> H{"Fail on High/Critical<br/>True Positives?"}
+    H -->|Ya| I["❌ CI Blocked"]
+    H -->|Tidak| J["✅ CI Passed"]
+```
+
+1. **Job 1: `unit-tests`**
+   - Menjalankan seluruh pengujian offline (`pytest -v`).
+   - Memastikan guardrail target allowlist, pembatasan private IP, dan pembersihan secret (JWT, bearer token, API key) berjalan 100% sebelum traffic scan ditembakkan.
+
+2. **Job 2: `dast-scan`**
+   - Menjalankan container daemon OWASP ZAP via Docker (`--network host`).
+   - Menjalankan server DAST-AI Orchestrator di `http://127.0.0.1:8000`.
+   - Menjalankan CLI Runner `scripts/ci_scan.py` untuk menguji target secara menyeluruh.
+   - Mengunggah artefak laporan `dast-report.json` dan `dast-report.md`.
+   - Menampilkan ringkasan visual langsung di **GitHub Actions Step Summary**.
+
+### 3. CLI Runner Mandiri (`scripts/ci_scan.py`)
+
+Anda juga dapat menjalankan skrip scanner CI secara mandiri di server lokal atau pipeline CI lain (GitLab CI, Bitbucket Pipelines, Jenkins):
+
+```bash
+python scripts/ci_scan.py \
+  --target-url "http://127.0.0.1:8081" \
+  --framework "fastapi" \
+  --api-url "http://127.0.0.1:8000" \
+  --fail-on "high" \
+  --output-json "dast-report.json" \
+  --output-md "dast-report.md"
+```
+
+**Daftar Parameter `scripts/ci_scan.py`:**
+| Opsi | Default | Keterangan |
+| :--- | :--- | :--- |
+| `--target-url` | *(wajib)* | URL target yang akan dipindai (harus terdaftar di `ALLOWED_HOSTS`). |
+| `--framework` | `unknown` | Framework aplikasi target (`fastapi`, `node-express`, `laravel`, dll.). |
+| `--api-url` | `http://127.0.0.1:8000` | Alamat DAST-AI Orchestrator API. |
+| `--fail-on` | `high` | Ambang batas keparahan untuk menghentikan CI (`critical`, `high`, `medium`, `any`, `none`). |
+| `--timeout` | `600` | Batas waktu maksimal pemindaian (detik). |
+| `--poll-interval` | `5` | Interval pengecekan status (detik). |
+| `--wait-ready` | `60` | Waktu tunggu hingga Orchestrator siap menerima request. |
+| `--output-json` | `""` | Path penyimpanan file laporan JSON. |
+| `--output-md` | `""` | Path penyimpanan file laporan Markdown. |
+
+### 4. Menjalankan Scan Manual (Workflow Dispatch)
+
+Anda dapat memicu pemindaian kapan saja langsung dari tab **Actions** di GitHub:
+1. Buka tab **Actions** di repositori GitHub.
+2. Pilih workflow **DAST-AI Security Pipeline** di panel kiri.
+3. Klik dropdown **Run workflow**.
+4. Isi parameter:
+   - **Target URL**: URL aplikasi staging yang ingin dipindai.
+   - **Target Framework**: Framework target.
+   - **Fail-On Threshold**: Ambang toleransi keparahan (`high`, `critical`, dll.).
+5. Klik **Run workflow**. Laporan lengkap dan saran patch keamanan akan langsung tampil setelah scan selesai!
+

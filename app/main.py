@@ -2,6 +2,7 @@ import uuid
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 
+from .config import settings
 from .guardrails import TargetNotAllowed, assert_target_allowed
 from .llm_client import analyze
 from .sanitizer import prepare_alerts
@@ -46,8 +47,24 @@ def create_scan(req: ScanRequest, bg: BackgroundTasks):
     return SCANS[scan_id]
 
 
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "environment": settings.environment,
+        "zap_url": settings.zap_url,
+        "llm_configured": bool(settings.llm_api_key),
+    }
+
+
+@app.get("/scans", response_model=list[ScanStatus])
+def list_scans():
+    return list(SCANS.values())
+
+
 @app.get("/scans/{scan_id}", response_model=ScanStatus)
 def get_scan(scan_id: str):
     if scan_id not in SCANS:
         raise HTTPException(404, "scan tidak ditemukan")
     return SCANS[scan_id]
+
