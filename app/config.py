@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     max_concurrent_scans: int = 2         # Batas scan konkuren untuk mencegah DoS
     max_stored_scans: int = 100           # Batas riwayat scan in-memory
     preflight_timeout_seconds: int = 10   # Timeout pre-flight check target
+    verify_tls: bool = True               # Verifikasi sertifikat TLS default AKTIF (Priority 2)
 
     # Vercel Deployment Protection Bypass
     vercel_bypass_secret: str = ""

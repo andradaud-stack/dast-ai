@@ -51,8 +51,12 @@ class TargetHealth(BaseModel):
 class CoverageMetrics(BaseModel):
     urls_discovered: list[str] = Field(default_factory=list)
     total_urls_discovered: int = 0
+    urls_requested: list[str] = Field(default_factory=list)
+    total_urls_requested: int = 0
     endpoints_tested: list[str] = Field(default_factory=list)
     total_endpoints_tested: int = 0
+    urls_rejected_by_scope: list[str] = Field(default_factory=list)
+    total_urls_rejected_by_scope: int = 0
     spider_status: str = "not_run"
     passive_scan_status: str = "not_run"
     active_scan_status: str = "not_run"

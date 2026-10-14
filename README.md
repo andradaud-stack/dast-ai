@@ -152,12 +152,28 @@ Proyek memiliki unit test komprehensif dan integration test berbasis live fixtur
 pytest -v
 ```
 
-Cakupan pengujian (46 automated tests):
-1. **Guardrails**: Scheme/port validation, userinfo blocking, allowlist enforcement, private IP checks, cloud metadata rejection, Vercel wildcard matching, scope regex anchoring, dan out-of-scope redirect detection.
-2. **Sanitizer**: Redaksi JWT, Bearer token, basic auth, Vercel bypass header, URL query tokens, private keys, dan alert deduplication tanpa kehilangan variasi attack nyata.
-3. **API Security**: Autentikasi Bearer token, pencegahan unauthorized access, format scan ID kriptografis (32 hex char), LRU store eviction, dan penolakan target liar pada level API.
-4. **Lifecycle & Modes**: Pre-flight checks (accessible, Vercel challenge detection, HTTP auth, WAF 403, network error), ZAP connectivity verification, isolasi mode passive vs active.
-5. **Integration & Destructive Control**: Uji coba live terhadap `tests/fixture_app.py` yang membuktikan tautan dapat ditemukan, missing security headers terdeteksi, dan endpoint kontrol destruktif (`/delete-account`) **tidak pernah tersentuh**.
+Cakupan pengujian (78 automated tests):
+1. **Guardrails & Unified Scope Regex**: Scheme/port validation, userinfo blocking, allowlist enforcement, private IP checks, cloud metadata rejection, Vercel wildcard matching, strictly anchored scope regex (`build_zap_scope_regex`), isolasi secret header ZAP replacer, dan out-of-scope redirect rejection.
+2. **TLS Verification**: Verifikasi sertifikat TLS standar pada pre-flight health check (`verify_tls: true`). Sertifikat invalid/untrusted dilaporkan sebagai `tls_error` dan scan dihentikan.
+3. **Truthful Coverage Metrics**: Pemisahan metrik yang terukur secara jujur antara `urls_discovered`, `urls_requested`, `endpoints_tested`, dan `urls_rejected_by_scope`. URL crawling divalidasi dengan `is_url_in_scope` sebelum dinyatakan sebagai endpoint yang diuji.
+4. **Sanitizer**: Redaksi JWT, Bearer token, basic auth, Vercel bypass header, URL query tokens, private keys, alert deduplication, dan pembersihan pesan error agar secret tidak bocor ke log/laporan.
+5. **API Security**: Autentikasi Bearer token, pencegahan unauthorized access, format scan ID kriptografis (32 hex char), LRU store eviction, proteksi endpoint `/health` (hanya menampilkan metadata operasional minimum), dan penolakan target liar pada level API.
+6. **Lifecycle & Modes**: Pre-flight checks (accessible, Vercel challenge detection, HTTP auth, WAF 403, network error), ZAP connectivity verification, isolasi mode passive vs active.
+7. **Integration & Destructive Control**: Uji coba live terhadap `tests/fixture_app.py` yang membuktikan route dapat ditemukan, missing security headers terdeteksi, dan endpoint kontrol destruktif (`/delete-account`) **tidak pernah tersentuh**.
+8. **Real OWASP ZAP Integration Tests**: Uji coba integrasi langsung terhadap daemon OWASP ZAP aktif di `localhost:8090` (otomatis di-skip jika daemon offline).
+
+---
+
+## ⚠️ Batasan Pengujian & Risiko State-Mutating GET
+
+1. **Risiko Endpoint GET yang Memodifikasi Data**:
+   - HTTP GET secara semantik (RFC 7231 / 9110) bersifat *safe* dan *idempotent*. Pemindai keamanan web (ZAP Spider) akan menjelajahi tautan GET yang ditemukan.
+   - Jika aplikasi target mengimplementasikan operasi destruktif atau mutasi state melalui GET (contoh: `/users/delete?id=123`), ZAP Spider dapat memicu mutasi tersebut jika URL tersebut tidak terdaftar di exclusion list.
+   - **Rekomendasi**: Selalu pastikan operasi mutasi state (create, update, delete) hanya menggunakan metode POST/PUT/PATCH/DELETE dengan proteksi CSRF. Tambahkan pola URL sensitif pada `extra_excludes` saat memicu scan.
+2. **Batasan Form Submission**:
+   - Spider ZAP dikonfigurasi dengan `post_form=False` untuk mencegah pengiriman form otomatis yang berisiko mengubah data atau memicu reset password.
+3. **Discovery Berbasis JavaScript (SPA)**:
+   - Spider standar membaca tautan HTML statis. Aplikasi berbasis client-side rendering (SPA) mungkin memerlukan AJAX Spider atau integrasi browser headless agar seluruh rute terpetakan. Status `inconclusive` akan muncul jika discovery hanya menemukan root endpoint.
 
 ---
 

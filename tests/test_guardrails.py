@@ -131,6 +131,7 @@ def test_vercel_wildcard_domain_matching(monkeypatch):
 
 def test_build_zap_scope_regex():
     import re
+    # 1. HTTP dengan port eksplisit
     regex_str = build_zap_scope_regex("http://localhost:8000")
     pattern = re.compile(regex_str)
 
@@ -138,10 +139,26 @@ def test_build_zap_scope_regex():
     assert pattern.match("http://localhost:8000/api/users")
     assert pattern.match("http://localhost:8000/login?redirect=1")
 
-    # Mencegah URL spoofing
+    # Mencegah URL spoofing & port mismatch
     assert not pattern.match("http://localhost:8000.evil.com")
     assert not pattern.match("http://otherhost:8000")
     assert not pattern.match("https://localhost:8000")
+    assert not pattern.match("http://localhost:9000/api")
+
+    # 2. HTTPS tanpa port eksplisit (Priority 1 Point 3)
+    target_vercel = "https://example.vercel.app"
+    v_regex = re.compile(build_zap_scope_regex(target_vercel))
+
+    # In scope
+    assert v_regex.match("https://example.vercel.app")
+    assert v_regex.match("https://example.vercel.app/api/tasks")
+    assert v_regex.match("https://example.vercel.app:443/login")
+
+    # Wajib DITOLAK: attacker subdomain, prefix spoofing, port unauthorized
+    assert not v_regex.match("https://example.vercel.app.attacker.test")
+    assert not v_regex.match("https://attacker.test/example.vercel.app")
+    assert not v_regex.match("https://example.vercel.app:8443")
+    assert not v_regex.match("http://example.vercel.app")
 
 
 def test_is_url_in_scope():
@@ -154,3 +171,10 @@ def test_is_url_in_scope():
     assert not is_url_in_scope("http://localhost:9000/app", orig)
     assert not is_url_in_scope("https://localhost:8000/app", orig)
     assert not is_url_in_scope("javascript:alert(1)", orig)
+
+    # Priority 1 tests via is_url_in_scope
+    target = "https://example.vercel.app"
+    assert is_url_in_scope("https://example.vercel.app/home", target)
+    assert not is_url_in_scope("https://example.vercel.app.attacker.test", target)
+    assert not is_url_in_scope("https://attacker.test/example.vercel.app", target)
+    assert not is_url_in_scope("https://example.vercel.app:8443", target)

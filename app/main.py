@@ -10,6 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from .config import settings
 from .guardrails import TargetNotAllowed, assert_target_allowed
 from .llm_client import analyze
+from .sanitizer import _clean
 from .schemas import (
     ScanReport,
     ScanRequest,
@@ -140,7 +141,7 @@ def pipeline(scan_id: str, req: ScanRequest) -> None:
     except Exception as e:
         logger.exception("Kesalahan internal saat menjalankan pipeline scan %s: %s", scan_id, e)
         st.state = "failed"
-        st.error = str(e)
+        st.error = _clean(str(e), limit=200)
     finally:
         _scan_semaphore.release()
 
@@ -154,9 +155,9 @@ def health_check():
         "zap_connected": zap_ok,
         "zap_url": settings.zap_url,
         "environment": settings.environment,
-        "llm_configured": bool(settings.llm_api_key),
         "default_scan_mode": settings.default_scan_mode,
-        "active_scans_capacity": settings.max_concurrent_scans,
+        "llm_configured": bool(settings.llm_api_key),
+        "version": "1.0.0",
     }
 
 

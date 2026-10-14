@@ -62,8 +62,6 @@ def is_host_allowed(hostname: str, allowed_hosts: list[str]) -> bool:
             if len(non_wildcards) < 2:
                 continue
 
-            # Validasi batas domain agar tidak mencocokkan across domain boundary
-            # Contoh: design-log-*.vercel.app tidak boleh cocok dengan other.vercel.app atau design-log.evil.com
             star_idx = p_clean.find("*")
             prefix = p_clean[:star_idx]
             suffix = p_clean[star_idx + 1:]
@@ -73,7 +71,6 @@ def is_host_allowed(hostname: str, allowed_hosts: list[str]) -> bool:
             if suffix and not host_clean.endswith(suffix):
                 continue
 
-            # Subdomain dalam wildcard tidak boleh mengandung titik tambahan jika pola adalah 1 level
             mid = host_clean[len(prefix): len(host_clean) - len(suffix)] if suffix else host_clean[len(prefix):]
             if "." in mid:
                 continue
@@ -92,7 +89,6 @@ def assert_target_allowed(url: str) -> None:
     if settings.environment not in ("local", "staging"):
         raise TargetNotAllowed("ENVIRONMENT harus 'local' atau 'staging'.")
 
-    # Mencegah URL ambigu atau bypass whitespace
     if not url or any(c in url for c in (" ", "\t", "\r", "\n")):
         raise TargetNotAllowed("URL tidak valid.")
 
@@ -100,11 +96,9 @@ def assert_target_allowed(url: str) -> None:
     if p.scheme not in ("http", "https") or not p.hostname:
         raise TargetNotAllowed("URL tidak valid.")
 
-    # Tolak userinfo (misal http://user:pass@host) untuk mencegah URL parser confusion
     if p.username or p.password or "@" in (p.netloc.split(":")[0]):
         raise TargetNotAllowed("URL mengandung userinfo atau format ambigu yang dilarang.")
 
-    # Validasi port
     try:
         port = p.port
     except ValueError:
@@ -117,7 +111,6 @@ def assert_target_allowed(url: str) -> None:
     if not is_host_allowed(hostname, settings.allowed_hosts):
         raise TargetNotAllowed(f"Host '{p.hostname}' tidak ada di allowlist.")
 
-    # Validasi DNS & SSRF protection
     try:
         addr_info = socket.getaddrinfo(hostname, None)
     except socket.gaierror as e:
@@ -129,21 +122,15 @@ def assert_target_allowed(url: str) -> None:
     for info in addr_info:
         ip = ipaddress.ip_address(info[4][0])
 
-        # 1. Selalu blokir Cloud Metadata IP & Link-Local (SSRF protection)
         if _is_ip_in_blocked_networks(ip):
             raise TargetNotAllowed(f"Host '{p.hostname}' resolve ke alamat link-local/cloud metadata ({ip}).")
 
-        # 2. Selalu blokir Multicast dan Reserved (kecuali loopback sah)
         if ip.is_multicast or (ip.is_reserved and not ip.is_loopback):
             raise TargetNotAllowed(f"Host '{p.hostname}' resolve ke IP reserved/multicast ({ip}).")
 
-        # 3. Mode REQUIRE_PRIVATE_IP: hanya izinkan IP private dan loopback
         if settings.require_private_ip:
             if not (ip.is_private or ip.is_loopback):
                 raise TargetNotAllowed(f"{p.hostname} resolve ke IP publik ({ip}).")
-
-        # 4. Mode REQUIRE_PRIVATE_IP=False (misal Vercel Preview): cegah DNS Rebinding
-        # Jika hostname adalah domain publik eksternal (bukan localhost/internal), jangan izinkan resolve ke private/loopback
         else:
             is_local_host = (
                 hostname in ("localhost", "127.0.0.1")
@@ -158,34 +145,37 @@ def assert_target_allowed(url: str) -> None:
 
 def build_zap_scope_regex(target_url: str) -> str:
     """
-    Membuat regex konteks ZAP yang strictly anchored.
-    Mencegah http://example.com mencocokkan http://example.com.attacker.com.
+    Satu fungsi acuan scope builder yang strictly anchored.
+    Digunakan secara konsisten untuk:
+    - Context inclusion ZAP
+    - ZAP Replacer header URL isolation
+    - Validasi URL hasil crawling (spider & core)
+    - Validasi redirect dan URL target lanjutan.
     """
     p = urlparse(target_url)
-    scheme = re.escape(p.scheme)
-    hostname = re.escape(p.hostname.lower() if p.hostname else "")
-    port_part = f":{p.port}" if p.port else r"(?::\d+)?"
-    path_prefix = re.escape(p.path.rstrip("/")) if p.path and p.path != "/" else ""
+    scheme = p.scheme.lower()
+    hostname = (p.hostname or "").lower()
 
-    return f"^{scheme}://{hostname}{port_part}{path_prefix}(?:/.*)?$"
+    if p.port:
+        port_regex = f":{p.port}"
+    else:
+        default_port = 443 if scheme == "https" else 80
+        # Diizinkan tanpa port atau dengan default port eksplisit (:80 atau :443)
+        port_regex = f"(?::{default_port})?"
+
+    escaped_scheme = re.escape(scheme)
+    escaped_host = re.escape(hostname)
+
+    return f"^{escaped_scheme}://{escaped_host}{port_regex}(?:/.*)?$"
 
 
-def is_url_in_scope(redirect_url: str, original_target: str) -> bool:
-    """Memeriksa apakah redirect URL masih dalam host/port yang diotorisasi."""
-    orig = urlparse(original_target)
-    redir = urlparse(redirect_url)
-
-    if redir.scheme not in ("http", "https"):
+def is_url_in_scope(url: str, target_url: str) -> bool:
+    """
+    Memeriksa apakah URL target/redirect/crawler berada dalam scope yang diotorisasi.
+    Menggunakan regex berjangkar yang sama persis dengan aturan konteks ZAP.
+    """
+    if not url or not isinstance(url, str):
         return False
-
-    if orig.scheme != redir.scheme:
-        return False
-
-    orig_host = (orig.hostname or "").lower()
-    redir_host = (redir.hostname or "").lower()
-    if orig_host != redir_host:
-        return False
-
-    orig_port = orig.port or (443 if orig.scheme == "https" else 80)
-    redir_port = redir.port or (443 if redir.scheme == "https" else 80)
-    return orig_port == redir_port
+    url_clean = url.strip()
+    regex_str = build_zap_scope_regex(target_url)
+    return bool(re.match(regex_str, url_clean))
