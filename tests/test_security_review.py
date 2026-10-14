@@ -121,8 +121,8 @@ def test_passive_mode_sets_safe_mode_and_skips_ascan():
         )
 
         assert alerts == []
-        # 1. Engine mode ZAP wajib diset ke 'safe'
-        mock_zap.core.set_mode.assert_called_with("safe")
+        # 1. Engine mode ZAP wajib diset ke 'protect' (hanya izinkan interaksi dengan target in-scope)
+        mock_zap.core.set_mode.assert_called_with("protect")
 
         # 2. Spider post_form wajib dinonaktifkan (read-only, tidak submit POST)
         mock_zap.spider.set_option_post_form.assert_called_with(False)

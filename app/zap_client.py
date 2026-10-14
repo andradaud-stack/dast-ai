@@ -47,12 +47,8 @@ def run_scan(
     zap.core.new_session(name="dast-ai", overwrite=True)
 
     # 1. Enforcement engine mode ZAP:
-    # Mode "safe" menonaktifkan seluruh kapabilitas serangan ZAP secara engine-level.
-    # Mode "protect" hanya mengizinkan serangan pada URL yang eksplisit terdaftar di context.
-    if scan_mode == "passive":
-        zap.core.set_mode("safe")
-    else:
-        zap.core.set_mode("protect")
+    # Mode "protect" memastikan ZAP hanya boleh berinteraksi dengan URL yang in-scope.
+    zap.core.set_mode("protect")
 
     ctx_id = zap.context.new_context(ctx)
     zap.context.include_in_context(ctx, target_scope_regex)
