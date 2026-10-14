@@ -1,6 +1,8 @@
 import re
 from urllib.parse import urlparse
 
+from .config import settings
+
 RISK_ORDER = {"High": 0, "Medium": 1, "Low": 2, "Informational": 3}
 MAX_ALERTS = 50
 
@@ -14,6 +16,18 @@ _SECRETS = [
 
 def _clean(text: str, limit: int) -> str:
     text = text or ""
+
+    # 1. Redaksi literal nilai secret yang terkonfigurasi di settings (pencegahan kebocoran ke LLM)
+    known_secrets = [
+        settings.vercel_bypass_secret,
+        settings.zap_api_key,
+        settings.llm_api_key,
+    ]
+    for sec in known_secrets:
+        if sec and len(sec) >= 6:
+            text = text.replace(sec, "[REDACTED_SECRET]")
+
+    # 2. Pola regex untuk JWT, bearer tokens, API keys, email
     for rx, repl in _SECRETS:
         text = rx.sub(repl, text)
     return text[:limit]

@@ -204,8 +204,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--vercel-bypass-secret",
-        default="",
-        help="Secret token untuk mem-bypass Vercel Deployment Protection (x-vercel-protection-bypass)",
+        default=os.environ.get("VERCEL_BYPASS_SECRET", ""),
+        help="Secret token untuk mem-bypass Vercel Deployment Protection (x-vercel-protection-bypass). Disarankan melalui env var VERCEL_BYPASS_SECRET.",
     )
     parser.add_argument(
         "--header",
@@ -219,6 +219,8 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    bypass_secret = args.vercel_bypass_secret or os.environ.get("VERCEL_BYPASS_SECRET", "")
+
     print("=" * 65)
     print("           🛡️  DAST-AI AUTOMATED SECURITY SCANNER")
     print("=" * 65)
@@ -227,8 +229,8 @@ def main() -> int:
     print(f"Orchestrator API:  {args.api_url}")
     print(f"Scan Mode:         {args.scan_mode.upper()}")
     print(f"Fail-On Threshold: {args.fail_on.upper()}")
-    if args.vercel_bypass_secret:
-        print("Vercel Bypass:     Enabled (Header injected)")
+    if bypass_secret:
+        print("Vercel Bypass:     Enabled (Header injected - value masked)")
     print("-" * 65)
 
     # 1. Pastikan orchestrator aktif
@@ -240,8 +242,8 @@ def main() -> int:
     excludes = [p.strip() for p in args.exclude_patterns.split(",") if p.strip()]
 
     custom_headers: dict[str, str] = {}
-    if args.vercel_bypass_secret:
-        custom_headers["x-vercel-protection-bypass"] = args.vercel_bypass_secret
+    if bypass_secret:
+        custom_headers["x-vercel-protection-bypass"] = bypass_secret
         custom_headers["x-vercel-set-bypass-cookie"] = "true"
     for h in args.header:
         if ":" in h:
