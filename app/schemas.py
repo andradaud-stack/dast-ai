@@ -32,6 +32,8 @@ class ScanRequest(BaseModel):
     target_url: HttpUrl
     framework: str = "unknown"
     exclude_patterns: list[str] = []
+    scan_mode: Literal["passive", "active", "full"] = "passive"
+    custom_headers: dict[str, str] = {}
 
 
 class Report(BaseModel):

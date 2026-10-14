@@ -196,6 +196,23 @@ def main() -> int:
         default="high",
         help="Ambang batas severity untuk menggagalkan CI (default: high)",
     )
+    parser.add_argument(
+        "--scan-mode",
+        choices=["passive", "active", "full"],
+        default="passive",
+        help="Mode pemindaian: passive (aman, tanpa fuzzing/attack), active, atau full (default: passive)",
+    )
+    parser.add_argument(
+        "--vercel-bypass-secret",
+        default="",
+        help="Secret token untuk mem-bypass Vercel Deployment Protection (x-vercel-protection-bypass)",
+    )
+    parser.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        help="Header HTTP kustom (format 'Key: Value'). Dapat digunakan berulang kali.",
+    )
     parser.add_argument("--exclude-patterns", default="", help="Pola regex URL yang dikecualikan (pisahkan koma)")
     parser.add_argument("--output-json", default="", help="File path untuk menyimpan laporan JSON")
     parser.add_argument("--output-md", default="", help="File path untuk menyimpan laporan Markdown")
@@ -208,7 +225,10 @@ def main() -> int:
     print(f"Target URL:        {args.target_url}")
     print(f"Target Framework:  {args.framework}")
     print(f"Orchestrator API:  {args.api_url}")
+    print(f"Scan Mode:         {args.scan_mode.upper()}")
     print(f"Fail-On Threshold: {args.fail_on.upper()}")
+    if args.vercel_bypass_secret:
+        print("Vercel Bypass:     Enabled (Header injected)")
     print("-" * 65)
 
     # 1. Pastikan orchestrator aktif
@@ -218,10 +238,22 @@ def main() -> int:
     # 2. Kirim permintaan pembuatan scan
     scan_url = f"{args.api_url.rstrip('/')}/scans"
     excludes = [p.strip() for p in args.exclude_patterns.split(",") if p.strip()]
+
+    custom_headers: dict[str, str] = {}
+    if args.vercel_bypass_secret:
+        custom_headers["x-vercel-protection-bypass"] = args.vercel_bypass_secret
+        custom_headers["x-vercel-set-bypass-cookie"] = "true"
+    for h in args.header:
+        if ":" in h:
+            k, v = h.split(":", 1)
+            custom_headers[k.strip()] = v.strip()
+
     payload = {
         "target_url": args.target_url,
         "framework": args.framework,
         "exclude_patterns": excludes,
+        "scan_mode": args.scan_mode,
+        "custom_headers": custom_headers,
     }
 
     try:

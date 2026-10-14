@@ -209,6 +209,9 @@ python scripts/ci_scan.py \
 | `--target-url` | *(wajib)* | URL target yang akan dipindai (harus terdaftar di `ALLOWED_HOSTS`). |
 | `--framework` | `unknown` | Framework aplikasi target (`fastapi`, `node-express`, `laravel`, dll.). |
 | `--api-url` | `http://127.0.0.1:8000` | Alamat DAST-AI Orchestrator API. |
+| `--scan-mode` | `passive` | Mode scan: `passive` (aman tanpa fuzzing/attack), `active`, atau `full`. |
+| `--vercel-bypass-secret` | `""` | Secret token untuk bypass Vercel Deployment Protection (`x-vercel-protection-bypass`). |
+| `--header` | `[]` | Header HTTP kustom (`Key: Value`). Dapat dipanggil berulang kali. |
 | `--fail-on` | `high` | Ambang batas keparahan untuk menghentikan CI (`critical`, `high`, `medium`, `any`, `none`). |
 | `--timeout` | `600` | Batas waktu maksimal pemindaian (detik). |
 | `--poll-interval` | `5` | Interval pengecekan status (detik). |
@@ -216,15 +219,40 @@ python scripts/ci_scan.py \
 | `--output-json` | `""` | Path penyimpanan file laporan JSON. |
 | `--output-md` | `""` | Path penyimpanan file laporan Markdown. |
 
-### 4. Menjalankan Scan Manual (Workflow Dispatch)
+### 4. Panduan Memindai Vercel Preview (Deployment Protection)
+
+Jika target Anda adalah aplikasi Vercel Preview (seperti DesignLogV2) yang dilindungi oleh Vercel Deployment Protection:
+
+1. **Dapatkan Bypass Secret dari Vercel Dashboard:**
+   - Buka project di **Vercel** > **Settings** > **Deployment Protection**.
+   - Di bagian **Protection Bypass for Automation**, salin secret token bypass.
+2. **Konfigurasi Scope & Allowlist Aman di `.env` DAST-AI:**
+   ```ini
+   ENVIRONMENT=staging
+   ALLOWED_HOSTS=["design-log-ruby.vercel.app", "design-log-*.vercel.app"]
+   REQUIRE_PRIVATE_IP=false
+   VERCEL_BYPASS_SECRET=secret-bypass-dari-vercel
+   ```
+3. **Jalankan Passive Scan Terlebih Dahulu:**
+   ```bash
+   python scripts/ci_scan.py \
+     --target-url "https://design-log-ruby.vercel.app" \
+     --framework "react-vite" \
+     --scan-mode "passive" \
+     --vercel-bypass-secret "secret-bypass-dari-vercel"
+   ```
+   *Mode `passive` hanya memetakan endpoint dan menganalisis security headers, cookie flags, CSP, dan kebocoran informasi tanpa mengirim payload fuzzing atau request destruktif ke database production/staging.*
+
+### 5. Menjalankan Scan Manual (Workflow Dispatch)
 
 Anda dapat memicu pemindaian kapan saja langsung dari tab **Actions** di GitHub:
 1. Buka tab **Actions** di repositori GitHub.
 2. Pilih workflow **DAST-AI Security Pipeline** di panel kiri.
 3. Klik dropdown **Run workflow**.
 4. Isi parameter:
-   - **Target URL**: URL aplikasi staging yang ingin dipindai.
-   - **Target Framework**: Framework target.
+   - **Target URL**: URL aplikasi staging/preview yang ingin dipindai.
+   - **Target Framework**: Framework target (`react-vite`, `fastapi`, dll.).
    - **Fail-On Threshold**: Ambang toleransi keparahan (`high`, `critical`, dll.).
 5. Klik **Run workflow**. Laporan lengkap dan saran patch keamanan akan langsung tampil setelah scan selesai!
+
 

@@ -6,7 +6,7 @@ MAX_ALERTS = 50
 
 _SECRETS = [
     (re.compile(r"eyJ[\w-]+\.[\w-]+\.[\w-]+"), "[JWT]"),
-    (re.compile(r"(?i)(bearer|token|api[_-]?key|secret|passwd|password|session(?:id)?)([\"'=:\s]+)[\w\-\.]{8,}"),
+    (re.compile(r"(?i)(bearer|token|api[_-]?key|secret|passwd|password|bypass|session(?:id)?)([\"'=:\s]+)[\w\-\.]{8,}"),
      r"\1\2[REDACTED]"),
     (re.compile(r"[\w\.+-]+@[\w-]+\.[\w\.-]+"), "[EMAIL]"),
 ]

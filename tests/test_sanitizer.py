@@ -14,6 +14,7 @@ def test_clean_secrets():
         ("api_key=secretapikey123", "api_key=[REDACTED]"),
         ("password: supersecretpass", "password: [REDACTED]"),
         ("token: 'myauthtoken999'", "token: '[REDACTED]'"),
+        ("x-vercel-protection-bypass: mybypasssecret123", "x-vercel-protection-bypass: [REDACTED]"),
     ]
     for raw, expected in samples:
         cleaned = _clean(raw, 200)

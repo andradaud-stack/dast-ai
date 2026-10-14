@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     max_spider_minutes: int = 5
     max_scan_minutes: int = 20
     scan_policy: str = ""                 # nama scan policy ZAP custom (opsional)
+    vercel_bypass_secret: str = ""        # secret bypass Vercel Deployment Protection
 
 
 settings = Settings()

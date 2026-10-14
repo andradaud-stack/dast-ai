@@ -74,3 +74,27 @@ def test_unresolvable_host_rejected(monkeypatch):
     with patch("socket.getaddrinfo", side_effect=socket.gaierror("getaddrinfo failed")):
         with pytest.raises(TargetNotAllowed, match="Gagal me-resolve host"):
             assert_target_allowed("http://unresolvable.internal")
+
+
+def test_wildcard_subdomain_allowlist(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "staging")
+    monkeypatch.setattr(settings, "allowed_hosts", ["design-log-*.vercel.app", "design-log-ruby.vercel.app"])
+    monkeypatch.setattr(settings, "require_private_ip", False)
+
+    # Should match allowed wildcard pattern
+    assert_target_allowed("https://design-log-preview-123.vercel.app")
+    assert_target_allowed("https://design-log-ruby.vercel.app")
+
+    # Should reject different project or domain
+    with pytest.raises(TargetNotAllowed, match="tidak ada di allowlist"):
+        assert_target_allowed("https://other-project.vercel.app")
+
+
+def test_standalone_wildcard_rejected(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "staging")
+    monkeypatch.setattr(settings, "allowed_hosts", ["*"])
+    monkeypatch.setattr(settings, "require_private_ip", False)
+
+    with pytest.raises(TargetNotAllowed, match="tidak ada di allowlist"):
+        assert_target_allowed("https://random-site.com")
+

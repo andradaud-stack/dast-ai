@@ -17,7 +17,12 @@ def pipeline(scan_id: str, req: ScanRequest) -> None:
     st = SCANS[scan_id]
     try:
         st.state = "scanning"
-        raw = run_scan(str(req.target_url), req.exclude_patterns)
+        raw = run_scan(
+            target=str(req.target_url),
+            extra_excludes=req.exclude_patterns,
+            scan_mode=req.scan_mode,
+            custom_headers=req.custom_headers,
+        )
 
         st.state = "analyzing"
         cleaned = prepare_alerts(raw)

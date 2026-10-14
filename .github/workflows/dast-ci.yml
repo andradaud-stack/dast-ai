@@ -26,6 +26,15 @@ on:
           - medium
           - any
           - none
+      scan_mode:
+        description: 'Mode pemindaian DAST (passive: aman tanpa fuzzing, active: active scan, full: keduanya)'
+        required: false
+        default: 'passive'
+        type: choice
+        options:
+          - passive
+          - active
+          - full
 
 permissions:
   contents: read
@@ -118,10 +127,12 @@ jobs:
           TARGET_URL="${{ github.event.inputs.target_url || 'http://127.0.0.1:8081' }}"
           FRAMEWORK="${{ github.event.inputs.framework || 'fastapi' }}"
           FAIL_ON="${{ github.event.inputs.fail_on || 'high' }}"
+          SCAN_MODE="${{ github.event.inputs.scan_mode || 'passive' }}"
 
           python scripts/ci_scan.py \
             --target-url "$TARGET_URL" \
             --framework "$FRAMEWORK" \
+            --scan-mode "$SCAN_MODE" \
             --api-url "http://127.0.0.1:8000" \
             --fail-on "$FAIL_ON" \
             --poll-interval 3 \

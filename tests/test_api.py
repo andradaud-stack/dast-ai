@@ -105,3 +105,27 @@ def test_fallback_triage_when_no_llm_key(monkeypatch):
 def test_analyze_empty_alerts():
     findings = analyze([], framework="fastapi")
     assert findings == []
+
+
+def test_create_scan_with_passive_mode_and_headers(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "staging")
+    monkeypatch.setattr(settings, "allowed_hosts", ["design-log-ruby.vercel.app"])
+    monkeypatch.setattr(settings, "require_private_ip", False)
+
+    recorded_req = []
+    monkeypatch.setattr("app.main.pipeline", lambda scan_id, req: recorded_req.append(req))
+
+    response = client.post(
+        "/scans",
+        json={
+            "target_url": "https://design-log-ruby.vercel.app",
+            "framework": "react-vite",
+            "scan_mode": "passive",
+            "custom_headers": {"x-vercel-protection-bypass": "test-secret-123"},
+        },
+    )
+    assert response.status_code == 202
+    assert len(recorded_req) == 1
+    assert recorded_req[0].scan_mode == "passive"
+    assert recorded_req[0].custom_headers["x-vercel-protection-bypass"] == "test-secret-123"
+

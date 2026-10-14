@@ -1,3 +1,4 @@
+import fnmatch
 import ipaddress
 import socket
 from urllib.parse import urlparse
@@ -9,6 +10,18 @@ class TargetNotAllowed(Exception):
     pass
 
 
+def is_host_allowed(hostname: str, allowed_hosts: list[str]) -> bool:
+    host_lower = hostname.lower()
+    for pattern in allowed_hosts:
+        p_clean = pattern.strip().lower()
+        if not p_clean or p_clean == "*":
+            # Menolak wildcard tunggal '*' untuk mencegah pembukaan scope tanpa batas
+            continue
+        if host_lower == p_clean or fnmatch.fnmatch(host_lower, p_clean):
+            return True
+    return False
+
+
 def assert_target_allowed(url: str) -> None:
     """Gerbang keamanan: dipanggil SEBELUM scan apa pun dimulai."""
     if settings.environment not in ("local", "staging"):
@@ -17,7 +30,7 @@ def assert_target_allowed(url: str) -> None:
     p = urlparse(url)
     if p.scheme not in ("http", "https") or not p.hostname:
         raise TargetNotAllowed("URL tidak valid.")
-    if p.hostname not in settings.allowed_hosts:
+    if not is_host_allowed(p.hostname, settings.allowed_hosts):
         raise TargetNotAllowed(f"Host '{p.hostname}' tidak ada di allowlist.")
 
     if settings.require_private_ip:
