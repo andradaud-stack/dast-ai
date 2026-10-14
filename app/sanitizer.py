@@ -7,52 +7,93 @@ RISK_ORDER = {"High": 0, "Medium": 1, "Low": 2, "Informational": 3}
 MAX_ALERTS = 50
 
 _SECRETS = [
+    # Private Key
+    (re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----"), "[PRIVATE_KEY]"),
+    # JWT Tokens
     (re.compile(r"eyJ[\w-]+\.[\w-]+\.[\w-]+"), "[JWT]"),
-    (re.compile(r"(?i)(bearer|token|api[_-]?key|secret|passwd|password|bypass|session(?:id)?)([\"'=:\s]+)[\w\-\.]{8,}"),
+    # Vercel Deployment Protection bypass secrets
+    (re.compile(r"(?i)(x-vercel-protection-bypass|x-vercel-set-bypass-cookie)([\"'=:\s]+)[\w\-\.]{6,}"),
      r"\1\2[REDACTED]"),
+    # Bearer, Basic Auth, Secrets, Passwords, API Keys, Session Tokens
+    (re.compile(r"(?i)(basic\s+)[a-zA-Z0-9+/=]{10,}"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)(bearer|token|api[_-]?key|secret|passwd|password|session(?:id)?|csrf[_-]?token)([\"'=:\s]+)[\w\-\.]{6,}"),
+     r"\1\2[REDACTED]"),
+    # URL Query parameter secrets
+    (re.compile(r"(?i)([?&](?:token|key|api_key|apikey|secret|auth|passwd|password|access_token)=)[^&\s]+"),
+     r"\1[REDACTED]"),
+    # Emails
     (re.compile(r"[\w\.+-]+@[\w-]+\.[\w\.-]+"), "[EMAIL]"),
 ]
 
 
-def _clean(text: str, limit: int) -> str:
+def _clean(text: str | None, limit: int = 500) -> str:
+    """Sanitasi string dari data sensitif dan batasi panjang karakter."""
     text = text or ""
 
-    # 1. Redaksi literal nilai secret yang terkonfigurasi di settings (pencegahan kebocoran ke LLM)
-    known_secrets = [
-        settings.vercel_bypass_secret,
-        settings.zap_api_key,
-        settings.llm_api_key,
+    # Sensor secret literal dari settings jika dikonfigurasi (misal token Vercel, ZAP key, LLM key)
+    configured_secrets = [
+        getattr(settings, "vercel_bypass_secret", ""),
+        getattr(settings, "zap_api_key", ""),
+        getattr(settings, "llm_api_key", ""),
     ]
-    for sec in known_secrets:
-        if sec and len(sec) >= 6:
+    for sec in configured_secrets:
+        if sec and len(sec) >= 6 and sec in text:
             text = text.replace(sec, "[REDACTED_SECRET]")
 
-    # 2. Pola regex untuk JWT, bearer tokens, API keys, email
     for rx, repl in _SECRETS:
         text = rx.sub(repl, text)
     return text[:limit]
 
 
+def sanitize_dict_or_str(data: dict | str | None) -> dict | str | None:
+    """Sanitasi struktur data dictionary atau string dari secrets."""
+    if data is None:
+        return None
+    if isinstance(data, str):
+        return _clean(data, 1000)
+    if isinstance(data, dict):
+        return {k: _clean(str(v), 1000) if isinstance(v, str) else v for k, v in data.items()}
+    return data
+
+
 def prepare_alerts(raw: list[dict]) -> list[dict]:
+    """
+    Menyiapkan alert mentah dari ZAP:
+    - Melakukan deduplikasi cerdas tanpa menghilangkan temuan pada parameter atau attack berbeda
+    - Melakukan sanitasi kredensial, JWT, dan rahasia
+    - Mengurutkan berdasarkan tingkat keparahan risiko
+    """
     seen, out = set(), []
     for a in sorted(raw, key=lambda x: RISK_ORDER.get(x.get("risk"), 9)):
-        path = urlparse(a.get("url", "")).path
-        key = (a.get("pluginId"), a.get("method"), a.get("param"), path)
+        url = a.get("url", "")
+        path = urlparse(url).path
+        method = a.get("method", "")
+        param = a.get("param", "")
+        plugin_id = a.get("pluginId", "")
+        attack = a.get("attack", "")
+
+        key = (plugin_id, method, param, path, attack[:50] if attack else "")
         if key in seen:
             continue
         seen.add(key)
+
         out.append({
             "alert_id": f"A{len(out)+1:03d}",
-            "name": a.get("alert"),
-            "risk": a.get("risk"),
-            "zap_confidence": a.get("confidence"),
-            "cwe": a.get("cweid"),
-            "method": a.get("method"),
-            "url": _clean(a.get("url", ""), 300),
-            "param": a.get("param"),
-            "attack": _clean(a.get("attack", ""), 200),
+            "plugin_id": str(plugin_id),
+            "name": a.get("alert") or a.get("name") or "Unnamed Alert",
+            "risk": a.get("risk", "Informational"),
+            "zap_confidence": a.get("confidence", "Medium"),
+            "cwe": str(a.get("cweid") or a.get("cwe") or ""),
+            "wasc": str(a.get("wascid") or a.get("wasc") or ""),
+            "method": method,
+            "url": _clean(url, 300),
+            "param": param,
+            "attack": _clean(attack, 200),
             "evidence": _clean(a.get("evidence", ""), 300),
             "zap_description": _clean(a.get("description", ""), 400),
+            "solution": _clean(a.get("solution", ""), 300),
+            "reference": _clean(a.get("reference", ""), 300),
+            "source": a.get("source", "zap"),
         })
         if len(out) >= MAX_ALERTS:
             break

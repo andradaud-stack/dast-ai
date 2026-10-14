@@ -4,7 +4,12 @@ from unittest.mock import patch
 import pytest
 
 from app.config import settings
-from app.guardrails import TargetNotAllowed, assert_target_allowed
+from app.guardrails import (
+    TargetNotAllowed,
+    assert_target_allowed,
+    build_zap_scope_regex,
+    is_url_in_scope,
+)
 
 
 def test_environment_not_allowed(monkeypatch):
@@ -28,6 +33,20 @@ def test_invalid_url_missing_hostname(monkeypatch):
         assert_target_allowed("http://")
 
 
+def test_userinfo_rejected(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "staging")
+    monkeypatch.setattr(settings, "allowed_hosts", ["localhost"])
+    with pytest.raises(TargetNotAllowed, match="URL mengandung userinfo"):
+        assert_target_allowed("http://admin:secret@localhost:8000")
+
+
+def test_invalid_port_rejected(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "staging")
+    monkeypatch.setattr(settings, "allowed_hosts", ["localhost"])
+    with pytest.raises(TargetNotAllowed, match="Port URL di luar rentang valid"):
+        assert_target_allowed("http://localhost:999999")
+
+
 def test_host_not_in_allowed_hosts(monkeypatch):
     monkeypatch.setattr(settings, "environment", "staging")
     monkeypatch.setattr(settings, "allowed_hosts", ["localhost", "127.0.0.1"])
@@ -40,7 +59,6 @@ def test_allowed_host_localhost_success(monkeypatch):
     monkeypatch.setattr(settings, "allowed_hosts", ["localhost", "127.0.0.1"])
     monkeypatch.setattr(settings, "require_private_ip", True)
 
-    # Should not raise exception
     assert_target_allowed("http://localhost:8000")
     assert_target_allowed("http://127.0.0.1:8000/api")
 
@@ -66,35 +84,73 @@ def test_private_ip_allowed(monkeypatch):
         assert_target_allowed("http://staging.internal")
 
 
-def test_unresolvable_host_rejected(monkeypatch):
+def test_cloud_metadata_ip_rejected(monkeypatch):
+    """Memastikan alamat cloud metadata AWS/GCP/Azure 169.254.169.254 selalu diblokir."""
     monkeypatch.setattr(settings, "environment", "staging")
-    monkeypatch.setattr(settings, "allowed_hosts", ["unresolvable.internal"])
-    monkeypatch.setattr(settings, "require_private_ip", True)
-
-    with patch("socket.getaddrinfo", side_effect=socket.gaierror("getaddrinfo failed")):
-        with pytest.raises(TargetNotAllowed, match="Gagal me-resolve host"):
-            assert_target_allowed("http://unresolvable.internal")
-
-
-def test_wildcard_subdomain_allowlist(monkeypatch):
-    monkeypatch.setattr(settings, "environment", "staging")
-    monkeypatch.setattr(settings, "allowed_hosts", ["design-log-*.vercel.app", "design-log-ruby.vercel.app"])
+    monkeypatch.setattr(settings, "allowed_hosts", ["metadata.internal"])
     monkeypatch.setattr(settings, "require_private_ip", False)
 
-    # Should match allowed wildcard pattern
-    assert_target_allowed("https://design-log-preview-123.vercel.app")
-    assert_target_allowed("https://design-log-ruby.vercel.app")
-
-    # Should reject different project or domain
-    with pytest.raises(TargetNotAllowed, match="tidak ada di allowlist"):
-        assert_target_allowed("https://other-project.vercel.app")
+    mock_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 80))]
+    with patch("socket.getaddrinfo", return_value=mock_addrinfo):
+        with pytest.raises(TargetNotAllowed, match="cloud metadata"):
+            assert_target_allowed("http://metadata.internal")
 
 
-def test_standalone_wildcard_rejected(monkeypatch):
+def test_multicast_ip_rejected(monkeypatch):
     monkeypatch.setattr(settings, "environment", "staging")
-    monkeypatch.setattr(settings, "allowed_hosts", ["*"])
+    monkeypatch.setattr(settings, "allowed_hosts", ["multicast.internal"])
     monkeypatch.setattr(settings, "require_private_ip", False)
 
-    with pytest.raises(TargetNotAllowed, match="tidak ada di allowlist"):
-        assert_target_allowed("https://random-site.com")
+    mock_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("224.0.0.1", 80))]
+    with patch("socket.getaddrinfo", return_value=mock_addrinfo):
+        with pytest.raises(TargetNotAllowed, match="cloud metadata|multicast"):
+            assert_target_allowed("http://multicast.internal")
 
+
+def test_vercel_wildcard_domain_matching(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "staging")
+    monkeypatch.setattr(settings, "allowed_hosts", ["*.dast-test.vercel.app"])
+    monkeypatch.setattr(settings, "require_private_ip", False)
+
+    mock_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("76.76.21.21", 80))]
+    with patch("socket.getaddrinfo", return_value=mock_addrinfo):
+        # Subdomain valid 1 tingkat diizinkan
+        assert_target_allowed("https://preview-123.dast-test.vercel.app")
+        assert_target_allowed("https://staging.dast-test.vercel.app")
+
+        # Domain serupa atau subdomain ganda harus DITOLAK
+        with pytest.raises(TargetNotAllowed, match="tidak ada di allowlist"):
+            assert_target_allowed("https://evil-dast-test.vercel.app")
+
+        with pytest.raises(TargetNotAllowed, match="tidak ada di allowlist"):
+            assert_target_allowed("https://sub.extra.dast-test.vercel.app")
+
+        with pytest.raises(TargetNotAllowed, match="tidak ada di allowlist"):
+            assert_target_allowed("https://otherdomain.vercel.app")
+
+
+def test_build_zap_scope_regex():
+    import re
+    regex_str = build_zap_scope_regex("http://localhost:8000")
+    pattern = re.compile(regex_str)
+
+    assert pattern.match("http://localhost:8000")
+    assert pattern.match("http://localhost:8000/api/users")
+    assert pattern.match("http://localhost:8000/login?redirect=1")
+
+    # Mencegah URL spoofing
+    assert not pattern.match("http://localhost:8000.evil.com")
+    assert not pattern.match("http://otherhost:8000")
+    assert not pattern.match("https://localhost:8000")
+
+
+def test_is_url_in_scope():
+    orig = "http://localhost:8000/app"
+    assert is_url_in_scope("http://localhost:8000/dashboard", orig)
+    assert is_url_in_scope("http://localhost:8000/api/data", orig)
+
+    # Out of scope
+    assert not is_url_in_scope("http://attacker.com/evil", orig)
+    assert not is_url_in_scope("http://localhost:9000/app", orig)
+    assert not is_url_in_scope("https://localhost:8000/app", orig)
+    assert not is_url_in_scope("javascript:alert(1)", orig)

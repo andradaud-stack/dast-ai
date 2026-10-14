@@ -1,54 +1,46 @@
-# DAST-AI
+# DAST-AI Enterprise Engine
 
-Sistem orkestrasi DAST (*Dynamic Application Security Testing*) berbasis **OWASP ZAP** dan **LLM (Claude / Anthropic)** menggunakan FastAPI. Sistem ini memetakan endpoint target, melakukan active scanning terkontrol, membersihkan temuan dari data rahasia (*secret sanitization*), dan menggunakan LLM untuk melakukan triase temuan serta meminimalkan *false positive*.
-
----
-
-## Fitur & Guardrails Keamanan
-- **Target Allowlist**: Hanya target yang terdaftar di `ALLOWED_HOSTS` yang dapat dipindai.
-- **Private IP Restriction**: Secara default (`REQUIRE_PRIVATE_IP=true`), scanning ke IP publik dicegah untuk menghindari pengujian tidak sengaja ke luar sistem lokal/staging.
-- **Data Sanitization**: Token JWT, Bearer token, API key, password, dan email dibersihkan secara otomatis sebelum dikirim ke LLM.
-- **Scan Throttling & Protected Scope**: Pengaturan rate limit scan dan pengecualian endpoint destruktif (seperti logout, delete, destroy, reset-db).
+Sistem orkestrasi DAST (*Dynamic Application Security Testing*) enterprise berbasis **OWASP ZAP** dan **LLM Triage (Anthropic / Claude)** menggunakan FastAPI. Sistem ini dirancang untuk memetakan permukaan serangan aplikasi web secara nyata, mengeksekusi pemeriksaan keamanan, memverifikasi bukti temuan, mendeteksi proteksi target (seperti Vercel Deployment Protection atau Auth Wall), dan menghasilkan laporan berbasis bukti (*evidence-based report*) yang dapat dipertanggungjawabkan.
 
 ---
 
-## Prasyarat
-- Python 3.10+
-- OWASP ZAP (versi 2.14+ disarankan)
-- API Key Anthropic (untuk LLM triage)
+## 🛡️ Filosofi Keamanan & Prinsip Kerja
+
+1. **Kejujuran Pelaporan (No False Sense of Security)**:
+   - Scan yang tidak menemukan kerentanan karena terhalang halaman login atau tantangan Vercel **TIDAK PERNAH** dilaporkan sebagai "Aman".
+   - Status pemindaian dinyatakan secara transparan: `completed`, `inconclusive`, `blocked`, atau `failed`.
+2. **Lapisan Triase AI Bersifat Advisory**:
+   - Alert teknis asli dari OWASP ZAP selalu disimpan secara utuh (`technical_alerts`).
+   - Analisis LLM tidak dapat menghapus temuan pemindai teknis, melainkan berfungsi sebagai asisten analis untuk mengevaluasi *false positive* dan menyusun rekomendasi patch remediasi.
+3. **Guardrails & Proteksi SSRF**:
+   - **Target Allowlist**: Hanya target yang diizinkan dalam `ALLOWED_HOSTS` yang dapat dipindai. Mendukung hostname eksak dan subdomain wildcard ketat (misal `*.staging.example.com`).
+   - **Blokir Cloud Metadata & SSRF**: Alamat metadata cloud (`169.254.169.254`), link-local (`169.254.0.0/16`, `fe80::/10`), dan multicast diblokir secara mutlak.
+   - **Strict Scope Regex**: ZAP Context dibatasi menggunakan regex berjangkar (*anchored regex*) untuk mencegah manipulasi subdomain mirip (contoh `http://target.com.attacker.com`).
+4. **Proteksi Integritas Data Target**:
+   - Endpoint destruktif (`logout`, `delete`, `destroy`, `reset-db`, `drop`, `truncate`, `purge`) secara otomatis dikecualikan dari crawling dan active testing.
+   - Throttling bawaan (delay milidetik, thread per host, batasan durasi spider/ascan) untuk mencegah *Denial of Service* pada target.
+5. **Sanitasi Rahasia (*Secret Sanitization*)**:
+   - Token JWT, kredensial Basic/Bearer auth, API keys, password, email, private key, dan secret bypass Vercel disanitasi otomatis sebelum disimpan atau dikirim ke prompt LLM.
 
 ---
 
-## Panduan Menjalankan
+## 🎯 Mode Pemindaian (*Scan Modes*)
 
-### Opsi 1: Tanpa Docker (Virtualenv)
+| Mode | Deskripsi | Perilaku | Kapan Digunakan |
+| :--- | :--- | :--- | :--- |
+| **`passive`** *(Default)* | Discovery & Analisis Pasif | Menjalankan ZAP Spider dan Passive Scanner. **Tidak mengirim payload serangan aktif**. | Pemindaian awal yang aman untuk produksi atau lingkungan yang sensitif. |
+| **`active`** | Active Security Testing | Menjalankan Active Scanner ZAP terhadap target dengan rule terkontrol, throttling, dan exclusion list. | Pengujian kerentanan mendalam (SQLi, XSS, Path Traversal, dll.) pada staging. |
+| **`full`** | Komprehensif | Menggabungkan Discovery Spidering, Passive Scan, dan Active Testing terkontrol. | Siklus pengujian keamanan menyeluruh pada pipeline CI/CD staging. |
 
-#### 1. Setup Virtual Environment & Dependencies
-Buka terminal di root direktori proyek:
+---
 
-**Windows (PowerShell):**
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt pytest
-```
+## ⚙️ Variabel Lingkungan (`.env`)
 
-**Linux / macOS:**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt pytest
-```
+Salin file `.env.example` ke `.env` dan sesuaikan nilainya:
 
-#### 2. Konfigurasi Environment File
-Salin file template `.env.example` menjadi `.env`:
-```bash
-cp .env.example .env
-```
-Sesuaikan isi file `.env`:
 ```ini
 ENVIRONMENT=staging
-ALLOWED_HOSTS=["localhost", "127.0.0.1"]
+ALLOWED_HOSTS=["localhost","127.0.0.1","*.staging.example.com","*.dast-test.vercel.app"]
 REQUIRE_PRIVATE_IP=true
 ZAP_URL=http://localhost:8090
 ZAP_API_KEY=kunci-api-zap-anda
@@ -58,201 +50,133 @@ THREADS_PER_HOST=2
 DELAY_MS=200
 MAX_SPIDER_MINUTES=5
 MAX_SCAN_MINUTES=20
+
+# Keamanan API & Kontrol Beban
+API_AUTH_TOKEN=rahasia-bearer-token-untuk-api-orchestrator
+DEFAULT_SCAN_MODE=passive
+MAX_CONCURRENT_SCANS=2
+PREFLIGHT_TIMEOUT_SECONDS=10
+
+# Vercel Deployment Protection (Opsional)
+VERCEL_PROTECTION_BYPASS_SECRET=secret-bypass-token-jika-ada
 ```
 
-#### 3. Jalankan OWASP ZAP di Host (Daemon Mode)
-Jalankan daemon ZAP pada port 8090 dengan API key yang sesuai dengan konfigurasi di atas:
+---
 
-**Windows:**
+## 🚀 Panduan Menjalankan
+
+### Menjalankan Tanpa Docker (Host / Virtualenv)
+
+#### 1. Setup Virtual Environment
 ```powershell
+# Windows
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+```bash
+# Linux / macOS
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+#### 2. Jalankan OWASP ZAP Daemon di Host
+Pastikan OWASP ZAP berjalan sebagai daemon di port 8090:
+```powershell
+# Windows
 zap.bat -daemon -port 8090 -config api.key=kunci-api-zap-anda
 ```
-
-**Linux / macOS:**
 ```bash
+# Linux / macOS
 zap.sh -daemon -port 8090 -config api.key=kunci-api-zap-anda
 ```
 
-#### 4. Jalankan FastAPI Orchestrator
-Jalankan server uvicorn:
+#### 3. Jalankan DAST-AI Orchestrator
 ```bash
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
-Aplikasi akan aktif di `http://127.0.0.1:8000` dan dokumentasi API interaktif dapat diakses di `http://127.0.0.1:8000/docs`.
+Aplikasi aktif di `http://127.0.0.1:8000` dengan Swagger UI di `http://127.0.0.1:8000/docs`.
 
 ---
 
-### Opsi 2: Menggunakan Docker Compose
+## 📡 Penggunaan API
 
-Jika ingin menjalankan ZAP dan orchestrator di dalam container Docker:
-
-1. Buat file `.env`:
-   ```bash
-   cp .env.example .env
-   ```
-   *(Pastikan `ZAP_URL=http://zap:8090` dan sesuaikan `ALLOWED_HOSTS` seperti `["host.docker.internal"]`)*
-
-2. Jalankan docker compose:
-   ```bash
-   docker compose up --build
-   ```
-
----
-
-## Menjalankan Pengujian (Testing)
-
-Proyek ini dilengkapi dengan unit test untuk memverifikasi guardrails keamanan dan fungsi pembersihan sanitasi data:
-
+### 1. Health Check
 ```bash
-pytest -v
+curl http://localhost:8000/health
 ```
 
-Semua pengujian berjalan secara offline dan mandiri tanpa mengirim traffic ke target eksternal.
-
----
-
-## Cara Penggunaan API
-
-### 1. Memulai Pemindaian Target (Trigger Scan)
-Kirim permintaan POST ke endpoint `/scans` (target **harus** sudah terdaftar di `ALLOWED_HOSTS`):
-
+### 2. Memulai Pemindaian (`POST /scans`)
 ```bash
 curl -X POST http://localhost:8000/scans \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer rahasia-bearer-token-untuk-api-orchestrator" \
   -d '{
     "target_url": "http://127.0.0.1:3000",
+    "scan_mode": "passive",
     "framework": "node-express"
   }'
 ```
-
-Response (HTTP 202 Accepted):
+Response `202 Accepted`:
 ```json
 {
-  "scan_id": "a1b2c3d4e5f6",
+  "scan_id": "4a8c9f1e2b3d4e5f60718293a4b5c6d7",
   "state": "queued",
   "error": null,
   "report": null
 }
 ```
 
-### 2. Memeriksa Status & Hasil Laporan
-Gunakan `scan_id` yang didapat untuk melihat status pemindaian (`scanning`, `analyzing`, atau `done`):
-
+### 3. Memeriksa Status & Laporan (`GET /scans/{scan_id}`)
 ```bash
-curl http://localhost:8000/scans/a1b2c3d4e5f6
+curl http://localhost:8000/scans/4a8c9f1e2b3d4e5f60718293a4b5c6d7 \
+  -H "Authorization: Bearer rahasia-bearer-token-untuk-api-orchestrator"
 ```
 
-Saat selesai (`done`), field `report` akan berisi total alert terdeteksi, ringkasan triase (*true positive*, *false positive*, *needs review*), serta detail setiap temuan beserta rekomendasi patch perbaikan kodenya.
+Laporan akhir berisi:
+- **`verdict_status`**: `completed` | `inconclusive` | `blocked` | `failed`.
+- **`target_health`**: status kode HTTP, diagnosa proteksi Vercel/auth wall, redirect scope status.
+- **`coverage`**: daftar URL dan endpoint yang berhasil ditemukan, durasi per tahap, jumlah rule aktif yang dijalankan.
+- **`technical_alerts`**: temuan teknis murni dari OWASP ZAP (CWE, WASC, pluginId, evidence, solution).
+- **`ai_triage`**: analisis penilaian *true positive* / *false positive*, kutipan bukti, dan saran kode perbaikan.
+- **`limitations`**: daftar batasan pemeriksaan yang belum dapat diuji secara jujur.
 
 ---
 
-## Integrasi CI/CD (GitHub Actions)
+## 🧪 Menjalankan Test Suite
 
-DAST-AI dilengkapi dengan integrasi **GitHub Actions** (`.github/workflows/dast-ci.yml`) dan CLI runner otomatis (`scripts/ci_scan.py`) untuk memindai aplikasi web secara otomatis setiap kali ada `push` atau `pull request`.
+Proyek memiliki unit test komprehensif dan integration test berbasis live fixture app:
 
-### 1. Konfigurasi Repository Secrets di GitHub
-
-Untuk mengaktifkan triase AI menggunakan Anthropic Claude di pipeline GitHub Actions:
-1. Masuk ke repositori GitHub Anda: **Settings** > **Secrets and variables** > **Actions**.
-2. Klik tombol **New repository secret**.
-3. Buat secret baru:
-   - **Name**: `LLM_API_KEY`
-   - **Value**: Masukkan Anthropic API key Anda (`sk-ant-...`).
-
-*(Catatan: Jika `LLM_API_KEY` belum disetel atau pada PR eksternal, sistem secara otomatis beralih ke mode rule-based triage fallback tanpa membatalkan pengujian).*
-
-### 2. Alur Kerja Pipeline CI/CD
-
-Pipeline GitHub Actions terdiri dari 2 tahapan (jobs):
-
-```mermaid
-flowchart LR
-    A["Push / Pull Request"] --> B["Job 1: Unit & Guardrail Tests<br/>(pytest -v)"]
-    B --> C["Job 2: DAST Scan & AI Triage"]
-    C --> D["Start Target & ZAP Daemon<br/>(Docker --network host)"]
-    D --> E["Start DAST-AI Orchestrator"]
-    E --> F["Execute scripts/ci_scan.py"]
-    F --> G["Publish GitHub Step Summary<br/>& Upload Artifacts"]
-    G --> H{"Fail on High/Critical<br/>True Positives?"}
-    H -->|Ya| I["❌ CI Blocked"]
-    H -->|Tidak| J["✅ CI Passed"]
+```bash
+pytest -v
 ```
 
-1. **Job 1: `unit-tests`**
-   - Menjalankan seluruh pengujian offline (`pytest -v`).
-   - Memastikan guardrail target allowlist, pembatasan private IP, dan pembersihan secret (JWT, bearer token, API key) berjalan 100% sebelum traffic scan ditembakkan.
+Cakupan pengujian (46 automated tests):
+1. **Guardrails**: Scheme/port validation, userinfo blocking, allowlist enforcement, private IP checks, cloud metadata rejection, Vercel wildcard matching, scope regex anchoring, dan out-of-scope redirect detection.
+2. **Sanitizer**: Redaksi JWT, Bearer token, basic auth, Vercel bypass header, URL query tokens, private keys, dan alert deduplication tanpa kehilangan variasi attack nyata.
+3. **API Security**: Autentikasi Bearer token, pencegahan unauthorized access, format scan ID kriptografis (32 hex char), LRU store eviction, dan penolakan target liar pada level API.
+4. **Lifecycle & Modes**: Pre-flight checks (accessible, Vercel challenge detection, HTTP auth, WAF 403, network error), ZAP connectivity verification, isolasi mode passive vs active.
+5. **Integration & Destructive Control**: Uji coba live terhadap `tests/fixture_app.py` yang membuktikan tautan dapat ditemukan, missing security headers terdeteksi, dan endpoint kontrol destruktif (`/delete-account`) **tidak pernah tersentuh**.
 
-2. **Job 2: `dast-scan`**
-   - Menjalankan container daemon OWASP ZAP via Docker (`--network host`).
-   - Menjalankan server DAST-AI Orchestrator di `http://127.0.0.1:8000`.
-   - Menjalankan CLI Runner `scripts/ci_scan.py` untuk menguji target secara menyeluruh.
-   - Mengunggah artefak laporan `dast-report.json` dan `dast-report.md`.
-   - Menampilkan ringkasan visual langsung di **GitHub Actions Step Summary**.
+---
 
-### 3. CLI Runner Mandiri (`scripts/ci_scan.py`)
+## 🤖 Integrasi CI/CD (`scripts/ci_scan.py`)
 
-Anda juga dapat menjalankan skrip scanner CI secara mandiri di server lokal atau pipeline CI lain (GitLab CI, Bitbucket Pipelines, Jenkins):
+Gunakan script CLI `scripts/ci_scan.py` untuk mengintegrasikan pemindaian pada pipeline CI/CD:
 
 ```bash
 python scripts/ci_scan.py \
-  --target-url "http://127.0.0.1:8081" \
-  --framework "fastapi" \
-  --api-url "http://127.0.0.1:8000" \
-  --fail-on "high" \
-  --output-json "dast-report.json" \
-  --output-md "dast-report.md"
+  --api-url http://localhost:8000 \
+  --target-url http://staging.internal:3000 \
+  --scan-mode passive \
+  --token rahasia-bearer-token \
+  --fail-on high \
+  --output-json report.json
 ```
 
-**Daftar Parameter `scripts/ci_scan.py`:**
-| Opsi | Default | Keterangan |
-| :--- | :--- | :--- |
-| `--target-url` | *(wajib)* | URL target yang akan dipindai (harus terdaftar di `ALLOWED_HOSTS`). |
-| `--framework` | `unknown` | Framework aplikasi target (`fastapi`, `node-express`, `laravel`, dll.). |
-| `--api-url` | `http://127.0.0.1:8000` | Alamat DAST-AI Orchestrator API. |
-| `--scan-mode` | `passive` | Mode scan: `passive` (aman tanpa fuzzing/attack), `active`, atau `full`. |
-| `--vercel-bypass-secret` | `""` | Secret token untuk bypass Vercel Deployment Protection (`x-vercel-protection-bypass`). |
-| `--header` | `[]` | Header HTTP kustom (`Key: Value`). Dapat dipanggil berulang kali. |
-| `--fail-on` | `high` | Ambang batas keparahan untuk menghentikan CI (`critical`, `high`, `medium`, `any`, `none`). |
-| `--timeout` | `600` | Batas waktu maksimal pemindaian (detik). |
-| `--poll-interval` | `5` | Interval pengecekan status (detik). |
-| `--wait-ready` | `60` | Waktu tunggu hingga Orchestrator siap menerima request. |
-| `--output-json` | `""` | Path penyimpanan file laporan JSON. |
-| `--output-md` | `""` | Path penyimpanan file laporan Markdown. |
-
-### 4. Panduan Memindai Vercel Preview (Deployment Protection)
-
-Jika target Anda adalah aplikasi Vercel Preview (seperti DesignLogV2) yang dilindungi oleh Vercel Deployment Protection:
-
-1. **Dapatkan Bypass Secret dari Vercel Dashboard:**
-   - Buka project di **Vercel** > **Settings** > **Deployment Protection**.
-   - Di bagian **Protection Bypass for Automation**, salin secret token bypass.
-2. **Konfigurasi Scope & Allowlist Aman di `.env` DAST-AI:**
-   ```ini
-   ENVIRONMENT=staging
-   ALLOWED_HOSTS=["design-log-ruby.vercel.app", "design-log-*.vercel.app"]
-   REQUIRE_PRIVATE_IP=false
-   VERCEL_BYPASS_SECRET=secret-bypass-dari-vercel
-   ```
-3. **Jalankan Passive Scan Terlebih Dahulu:**
-   ```bash
-   python scripts/ci_scan.py \
-     --target-url "https://design-log-ruby.vercel.app" \
-     --framework "react-vite" \
-     --scan-mode "passive" \
-     --vercel-bypass-secret "secret-bypass-dari-vercel"
-   ```
-   *Mode `passive` hanya memetakan endpoint dan menganalisis security headers, cookie flags, CSP, dan kebocoran informasi tanpa mengirim payload fuzzing atau request destruktif ke database production/staging.*
-
-### 5. Menjalankan Scan Manual (Workflow Dispatch)
-
-Anda dapat memicu pemindaian kapan saja langsung dari tab **Actions** di GitHub:
-1. Buka tab **Actions** di repositori GitHub.
-2. Pilih workflow **DAST-AI Security Pipeline** di panel kiri.
-3. Klik dropdown **Run workflow**.
-4. Isi parameter:
-   - **Target URL**: URL aplikasi staging/preview yang ingin dipindai.
-   - **Target Framework**: Framework target (`react-vite`, `fastapi`, dll.).
-   - **Fail-On Threshold**: Ambang toleransi keparahan (`high`, `critical`, dll.).
-5. Klik **Run workflow**. Laporan lengkap dan saran patch keamanan akan langsung tampil setelah scan selesai!
-
-
+### Exit Codes CI/CD:
+- **`0`**: Sukses (Scan selesai dan tidak ada alert melebihi ambang batas).
+- **`1`**: Temuan Keamanan (Ditemukan kerentanan High/Critical).
+- **`2`**: Inconclusive / Blocked (Target terhalang proteksi, Vercel challenge, atau login wall — **pipeline gagal karena keamanan belum terbukti**).
+- **`3`**: Error Scanner / Timeout (Koneksi ke orchestrator atau ZAP gagal).

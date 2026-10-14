@@ -1,4 +1,4 @@
-from app.sanitizer import _clean, prepare_alerts
+from app.sanitizer import _clean, prepare_alerts, sanitize_dict_or_str
 
 
 def test_clean_jwt():
@@ -14,11 +14,33 @@ def test_clean_secrets():
         ("api_key=secretapikey123", "api_key=[REDACTED]"),
         ("password: supersecretpass", "password: [REDACTED]"),
         ("token: 'myauthtoken999'", "token: '[REDACTED]'"),
-        ("x-vercel-protection-bypass: mybypasssecret123", "x-vercel-protection-bypass: [REDACTED]"),
+        ("Basic dXNlcm5hbWU6cGFzc3dvcmQxMjM=", "Basic [REDACTED]"),
     ]
     for raw, expected in samples:
         cleaned = _clean(raw, 200)
         assert "[REDACTED]" in cleaned
+
+
+def test_clean_vercel_bypass_secret():
+    raw = "x-vercel-protection-bypass: vercel_secret_token_123456"
+    cleaned = _clean(raw, 200)
+    assert "[REDACTED]" in cleaned
+    assert "vercel_secret_token_123456" not in cleaned
+
+
+def test_clean_private_key():
+    raw = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0...\n-----END RSA PRIVATE KEY-----"
+    cleaned = _clean(raw, 200)
+    assert "[PRIVATE_KEY]" in cleaned
+    assert "MIIEowIBAAKCAQEA" not in cleaned
+
+
+def test_clean_url_query_secrets():
+    raw = "http://localhost:8000/callback?code=auth_code_123&token=secret_jwt_token&status=ok"
+    cleaned = _clean(raw, 200)
+    assert "[REDACTED]" in cleaned
+    assert "secret_jwt_token" not in cleaned
+    assert "status=ok" in cleaned
 
 
 def test_clean_emails():
@@ -37,6 +59,18 @@ def test_clean_truncation():
 def test_clean_none_and_empty():
     assert _clean(None, 50) == ""
     assert _clean("", 50) == ""
+
+
+def test_sanitize_dict():
+    data = {
+        "url": "http://localhost/login?token=mysecrettoken",
+        "header": "Bearer 1234567890abcdef",
+        "safe_int": 42,
+    }
+    sanitized = sanitize_dict_or_str(data)
+    assert "[REDACTED]" in sanitized["url"]
+    assert "[REDACTED]" in sanitized["header"]
+    assert sanitized["safe_int"] == 42
 
 
 def test_prepare_alerts_deduplication():
@@ -102,6 +136,7 @@ def test_prepare_alerts_sanitizes_content():
             "attack": "bearer secrettoken123456",
             "evidence": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.secret_sig",
             "description": "User user@test.com leak",
+            "solution": "Ganti password: secretpass123",
             "risk": "Medium",
         }
     ]
@@ -112,3 +147,4 @@ def test_prepare_alerts_sanitizes_content():
     assert "[REDACTED]" in item["attack"]
     assert "[JWT]" in item["evidence"]
     assert "[EMAIL]" in item["zap_description"]
+    assert "[REDACTED]" in item["solution"]
