@@ -113,7 +113,38 @@ def test_destructive_endpoints_never_touched(fixture_server):
         assert res.technical_alerts[0].name == "Anti-clickjacking Header Missing"
 
 
-@pytest.mark.skipif(not check_zap_connectivity(), reason="OWASP ZAP daemon tidak aktif di localhost:8090")
+import os
+
+
+def _should_skip_real_zap() -> bool:
+    """
+    Menentukan apakah pengujian integrasi ZAP riil harus dilewati:
+    - Jika REQUIRE_ZAP=true (pada job CI yang menyalakan daemon ZAP), tes TIDAK BOLEH dilewati
+      agar kegagalan koneksi atau konfigurasi ZAP menggagalkan pipeline secara eksplisit.
+    - Di lingkungan lokal tanpa daemon ZAP aktif, tes dilewati secara aman.
+    """
+    require_zap = os.environ.get("REQUIRE_ZAP", "").lower() in ("true", "1")
+    if require_zap:
+        return False
+    return not check_zap_connectivity()
+
+
+def test_require_zap_fails_when_unreachable(monkeypatch):
+    """Memverifikasi bahwa jika REQUIRE_ZAP=true dan ZAP offline, tes tidak diskip melainkan memanggil pytest.fail."""
+    monkeypatch.setenv("REQUIRE_ZAP", "true")
+    assert _should_skip_real_zap() is False
+
+    with patch("tests.test_integration.check_zap_connectivity", return_value=False):
+        with pytest.raises(pytest.fail.Exception) as exc_info:
+            if not check_zap_connectivity():
+                pytest.fail(f"OWASP ZAP daemon wajib aktif (REQUIRE_ZAP=true) tetapi gagal dihubungi di {settings.zap_url}")
+        assert "OWASP ZAP daemon wajib aktif" in str(exc_info.value)
+
+
+@pytest.mark.skipif(
+    _should_skip_real_zap(),
+    reason="OWASP ZAP daemon tidak aktif di localhost:8090 (atur REQUIRE_ZAP=true untuk mewajibkan)",
+)
 def test_real_zap_passive_scan_integration(fixture_server):
     """
     Priority 4: Uji integrasi nyata terhadap daemon OWASP ZAP (jika aktif):
@@ -124,11 +155,14 @@ def test_real_zap_passive_scan_integration(fixture_server):
     - Endpoint destruktif (/delete-account) tidak pernah dipanggil
     - Redirect out of scope tidak diikuti
     """
+    if not check_zap_connectivity():
+        pytest.fail(f"OWASP ZAP daemon wajib aktif (REQUIRE_ZAP=true) tetapi gagal dihubungi di {settings.zap_url}")
+
     FixtureState.reset()
     res = execute_scan(fixture_server.base_url, scan_mode="passive")
 
     # Fixture dapat diakses oleh ZAP
-    assert res.target_accessible is True
+    assert res.target_health.accessible is True
     assert res.verdict_status == "completed"
 
     # Spider menemukan route
@@ -137,7 +171,7 @@ def test_real_zap_passive_scan_integration(fixture_server):
     assert any("/api/public" in u for u in res.coverage.urls_discovered)
 
     # Active scanner tidak dijalankan
-    assert res.coverage.active_scan_status == "skipped"
+    assert res.coverage.active_scan_status == "skipped_passive_mode"
 
     # Destructive endpoints never called
     assert FixtureState.destructive_called is False
@@ -147,7 +181,10 @@ def test_real_zap_passive_scan_integration(fixture_server):
     assert len(res.technical_alerts) > 0
 
 
-@pytest.mark.skipif(not check_zap_connectivity(), reason="OWASP ZAP daemon tidak aktif di localhost:8090")
+@pytest.mark.skipif(
+    _should_skip_real_zap(),
+    reason="OWASP ZAP daemon tidak aktif di localhost:8090 (atur REQUIRE_ZAP=true untuk mewajibkan)",
+)
 def test_real_zap_active_scan_completes(fixture_server):
     """
     Priority 4: Uji integrasi nyata mode active terhadap daemon OWASP ZAP:
@@ -155,10 +192,13 @@ def test_real_zap_active_scan_completes(fixture_server):
     - Coverage merekam active scan completed
     - Endpoint destruktif tetap terlindungi dan tidak disentuh
     """
+    if not check_zap_connectivity():
+        pytest.fail(f"OWASP ZAP daemon wajib aktif (REQUIRE_ZAP=true) tetapi gagal dihubungi di {settings.zap_url}")
+
     FixtureState.reset()
     res = execute_scan(fixture_server.base_url, scan_mode="active")
 
-    assert res.target_accessible is True
+    assert res.target_health.accessible is True
     assert res.coverage.active_scan_status == "completed"
     assert FixtureState.destructive_called is False
 

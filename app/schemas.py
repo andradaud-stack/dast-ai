@@ -64,6 +64,7 @@ class CoverageMetrics(BaseModel):
     requests_succeeded: int = 0
     requests_failed: int = 0
     requests_blocked: int = 0
+    total_messages_recorded: int = 0
     duration_seconds: dict[str, float] = Field(default_factory=dict)
     untested_checks: list[str] = Field(default_factory=list)
     limitations_disclaimer: str = ""

@@ -33,8 +33,10 @@ def _clean(text: str | None, limit: int = 500) -> str:
     # Sensor secret literal dari settings jika dikonfigurasi (misal token Vercel, ZAP key, LLM key)
     configured_secrets = [
         getattr(settings, "vercel_bypass_secret", ""),
+        getattr(settings, "vercel_protection_bypass_secret", ""),
         getattr(settings, "zap_api_key", ""),
         getattr(settings, "llm_api_key", ""),
+        getattr(settings, "api_auth_token", ""),
     ]
     for sec in configured_secrets:
         if sec and len(sec) >= 6 and sec in text:

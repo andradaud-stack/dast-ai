@@ -103,6 +103,17 @@ jobs:
           timeout 60 bash -c 'until curl -s "http://127.0.0.1:8090/JSON/core/view/version/?apikey=ci-zap-secret-key" > /dev/null; do sleep 2; done'
           echo "OWASP ZAP daemon is online and ready!"
 
+      - name: Run Real ZAP Integration Tests
+        env:
+          REQUIRE_ZAP: "true"
+          ENVIRONMENT: staging
+          ALLOWED_HOSTS: '["127.0.0.1", "localhost"]'
+          REQUIRE_PRIVATE_IP: "true"
+          ZAP_URL: "http://127.0.0.1:8090"
+          ZAP_API_KEY: "ci-zap-secret-key"
+        run: |
+          pytest tests/test_integration.py -v
+
       - name: Start DAST-AI Orchestrator
         env:
           ENVIRONMENT: staging

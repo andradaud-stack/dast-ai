@@ -70,20 +70,34 @@ def wait_for_orchestrator(api_url: str, max_wait_seconds: int = 60) -> bool:
 
 
 def build_markdown_report(target_url: str, scan_data: dict[str, Any], failed: bool, fail_reason: str) -> str:
+    if not isinstance(scan_data, dict):
+        scan_data = {"scan_id": "N/A", "state": "invalid_response", "report": {}}
+
     scan_id = scan_data.get("scan_id", "N/A")
-    report = scan_data.get("report") or {}
+    state = scan_data.get("state", "unknown")
+    report = scan_data.get("report") if isinstance(scan_data.get("report"), dict) else {}
     total_alerts = report.get("total_alerts", 0)
     true_positives = report.get("true_positive", 0)
     false_positives = report.get("false_positive", 0)
     needs_review = report.get("needs_review", 0)
     findings = report.get("findings", [])
+    limitations = report.get("limitations", [])
 
-    status_badge = "❌ **FAILED**" if failed else "✅ **PASSED**"
-    banner_callout = (
-        f"> [!CAUTION]\n> **DAST Scan Gagal**: {fail_reason}"
-        if failed
-        else "> [!NOTE]\n> **DAST Scan Berhasil**: Tidak ditemukan kerentanan di atas ambang batas toleransi."
-    )
+    if state == "blocked":
+        status_badge = "🚫 **BLOCKED**"
+        banner_callout = f"> [!WARNING]\n> **DAST Scan Terblokir**: {fail_reason}"
+    elif state == "inconclusive":
+        status_badge = "⚠️ **INCONCLUSIVE**"
+        banner_callout = f"> [!WARNING]\n> **DAST Scan Tidak Konklusif**: {fail_reason}"
+    elif state == "failed":
+        status_badge = "❌ **FAILED**"
+        banner_callout = f"> [!CAUTION]\n> **DAST Scan Gagal**: {fail_reason}"
+    elif failed:
+        status_badge = "❌ **FAILED**"
+        banner_callout = f"> [!CAUTION]\n> **DAST Scan Gagal**: {fail_reason}"
+    else:
+        status_badge = "✅ **PASSED**"
+        banner_callout = "> [!NOTE]\n> **DAST Scan Berhasil**: Tidak ditemukan kerentanan di atas ambang batas toleransi."
 
     md = [
         "# 🛡️ DAST-AI Security Scan Report",
@@ -102,6 +116,12 @@ def build_markdown_report(target_url: str, scan_data: dict[str, Any], failed: bo
         f"| **{total_alerts}** | **{true_positives}** | **{false_positives}** | **{needs_review}** |",
         "",
     ]
+
+    if limitations:
+        md.append("### ⚠️ Keterbatasan Pemindaian")
+        for lim in limitations:
+            md.append(f"- {lim}")
+        md.append("")
 
     if findings:
         md.append("### 🔎 Rincian Temuan Keamanan")
@@ -148,7 +168,7 @@ def build_markdown_report(target_url: str, scan_data: dict[str, Any], failed: bo
 
             md.append("</details>")
             md.append("")
-    else:
+    elif state == "done":
         md.append("_Tidak ada temuan alert yang terdeteksi._")
         md.append("")
 
@@ -182,7 +202,7 @@ def evaluate_findings(findings: list[dict[str, Any]], fail_on: str) -> tuple[boo
     return False, ""
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="DAST-AI CI Security Scan Runner")
     parser.add_argument("--target-url", required=True, help="URL target aplikasi yang akan dipindai")
     parser.add_argument("--framework", default="unknown", help="Framework target (mis. fastapi, node-express, laravel)")
@@ -217,7 +237,7 @@ def main() -> int:
     parser.add_argument("--output-json", default="", help="File path untuk menyimpan laporan JSON")
     parser.add_argument("--output-md", default="", help="File path untuk menyimpan laporan Markdown")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     bypass_secret = args.vercel_bypass_secret or os.environ.get("VERCEL_BYPASS_SECRET", "")
 
@@ -233,9 +253,9 @@ def main() -> int:
         print("Vercel Bypass:     Enabled (Header injected - value masked)")
     print("-" * 65)
 
-    # 1. Pastikan orchestrator aktif
+    # 1. Pastikan orchestrator aktif (Exit 3 jika tidak dapat terhubung)
     if not wait_for_orchestrator(args.api_url, max_wait_seconds=args.wait_ready):
-        return 1
+        return 3
 
     # 2. Kirim permintaan pembuatan scan
     scan_url = f"{args.api_url.rstrip('/')}/scans"
@@ -264,21 +284,41 @@ def main() -> int:
         scan_id = init_res.get("scan_id")
         if not scan_id:
             print(f"[-] Format respon tidak valid: {init_res}")
-            return 1
+            return 3
         print(f"[+] Pemindaian berhasil dijadwalkan! Scan ID: {scan_id}")
     except Exception as e:
         print(f"[-] Gagal membuat permintaan scan: {e}")
-        return 1
+        return 3
 
-    # 3. Polling status scan hingga selesai
+    # 3. Polling status scan hingga selesai (Hentikan segera pada status terminal)
     status_url = f"{scan_url}/{scan_id}"
     start_time = time.time()
     scan_data: dict[str, Any] = {}
+    terminal_state: str = ""
+
+    in_progress_states = {
+        "queued",
+        "preflight",
+        "spidering",
+        "passive_scanning",
+        "active_scanning",
+        "analyzing",
+    }
+    terminal_states = {"done", "blocked", "inconclusive", "failed"}
+    consecutive_poll_errors = 0
+    max_consecutive_poll_errors = 5
 
     print("[*] Memulai pemantauan status scan...")
     while time.time() - start_time < args.timeout:
         try:
             scan_data = http_get(status_url)
+            consecutive_poll_errors = 0
+
+            if not isinstance(scan_data, dict):
+                print(f"[!] Format respons status tidak valid (bukan JSON object): {scan_data}")
+                terminal_state = "invalid_api_response"
+                break
+
             state = scan_data.get("state")
             elapsed = int(time.time() - start_time)
             mins, secs = divmod(elapsed, 60)
@@ -286,31 +326,96 @@ def main() -> int:
 
             print(f"[{timestamp_str}] State: {state.upper() if state else 'UNKNOWN'}")
 
-            if state == "done":
-                print(f"[+] Pemindaian selesai dalam {timestamp_str}!")
+            if state in terminal_states:
+                terminal_state = state
+                print(f"[+] Pemindaian mencapai status terminal '{state.upper()}' dalam {timestamp_str}!")
                 break
-            if state == "failed":
-                err = scan_data.get("error", "Alasan tidak diketahui")
-                print(f"[-] Pemindaian GAGAL: {err}")
-                return 1
+            elif state not in in_progress_states:
+                terminal_state = str(state) if state else "unknown_or_empty"
+                print(f"[-] Terdeteksi status tidak dikenal/tidak valid '{terminal_state}' dalam {timestamp_str}!")
+                break
 
         except Exception as e:
-            print(f"[!] Warning saat polling status: {e}")
+            consecutive_poll_errors += 1
+            print(f"[!] Warning saat polling status ({consecutive_poll_errors}/{max_consecutive_poll_errors}): {e}")
+            if consecutive_poll_errors >= max_consecutive_poll_errors:
+                print(f"[-] Polling dihentikan karena {max_consecutive_poll_errors} kegagalan berturut-turut.")
+                terminal_state = "polling_failed"
+                break
 
         time.sleep(args.poll_interval)
     else:
         print(f"[-] Pemindaian timeout setelah melebihi batas waktu {args.timeout} detik.")
-        return 1
+        terminal_state = "timeout"
 
-    # 4. Evaluasi hasil temuan
-    report = scan_data.get("report") or {}
+    # 4. Evaluasi hasil berdasarkan status terminal & tentukan exit code
+    safe_scan_data = scan_data if isinstance(scan_data, dict) else {
+        "scan_id": scan_id if "scan_id" in locals() and scan_id else "N/A",
+        "state": terminal_state,
+        "error": "Respons status scan bukan JSON object yang valid",
+        "report": {},
+    }
+    report = safe_scan_data.get("report") if isinstance(safe_scan_data.get("report"), dict) else {}
     findings = report.get("findings", [])
-    failed, fail_reason = evaluate_findings(findings, args.fail_on)
+    failed = False
+    fail_reason = ""
+    exit_code = 0
+
+    if terminal_state == "failed":
+        err = safe_scan_data.get("error", "Alasan tidak diketahui")
+        print(f"[-] Pemindaian GAGAL: {err}")
+        failed = True
+        fail_reason = f"Kegagalan internal scanner/pipeline: {err}"
+        exit_code = 3
+
+    elif terminal_state == "blocked":
+        target_health = report.get("target_health") or {}
+        diag = target_health.get("diagnostic_message") or "Target memblokir pemindaian (Vercel challenge / auth wall / WAF / redirect out of scope)."
+        fail_reason = f"Target memblokir pemindaian: {diag}"
+        print(f"\n🚫 [CI BLOCKED] {fail_reason}")
+        failed = True
+        exit_code = 2
+
+    elif terminal_state == "inconclusive":
+        limitations = report.get("limitations") or []
+        lim_str = "; ".join(limitations) if limitations else "Crawling tidak menemukan endpoint yang dapat diuji atau bukti pengujian tidak mencukupi."
+        fail_reason = f"Pemindaian tidak konklusif: {lim_str}"
+        print(f"\n⚠️ [CI INCONCLUSIVE] {fail_reason}")
+        failed = True
+        exit_code = 2
+
+    elif terminal_state == "timeout":
+        fail_reason = f"Pemindaian timeout setelah melebihi batas waktu {args.timeout} detik."
+        print(f"\n[-] {fail_reason}")
+        failed = True
+        exit_code = 3
+
+    elif terminal_state == "polling_failed":
+        fail_reason = "Polling status gagal berulang kali karena orchestrator tidak dapat dihubungi."
+        print(f"\n[-] {fail_reason}")
+        failed = True
+        exit_code = 3
+
+    elif terminal_state == "done":
+        failed, fail_reason = evaluate_findings(findings, args.fail_on)
+        if failed:
+            print(f"\n❌ [CI FAILED] {fail_reason}")
+            exit_code = 1
+        else:
+            print(f"\n✅ [CI PASSED] Pemindaian keamanan memenuhi ambang batas ({args.fail_on.upper()}).")
+            exit_code = 0
+
+    else:
+        fail_reason = f"Status terminal pemindaian tidak dikenal atau tidak valid: '{terminal_state}'"
+        print(f"\n[-] {fail_reason}")
+        failed = True
+        exit_code = 3
 
     # 5. Cetak ringkasan di konsol
     print("\n" + "=" * 65)
     print("                    RINGKASAN HASIL PEMINDAIAN")
     print("=" * 65)
+    print(f"Status Terminal:        {terminal_state.upper()}")
     print(f"Total Alerts ZAP:       {report.get('total_alerts', 0)}")
     print(f"🔴 True Positives:      {report.get('true_positive', 0)}")
     print(f"🟢 False Positives:     {report.get('false_positive', 0)}")
@@ -323,23 +428,23 @@ def main() -> int:
             sev = (f.get("severity") or "info").upper()
             verdict = f.get("verdict")
             print(f" - [{sev}] {f.get('title')} -> {verdict} (Confidence: {f.get('confidence', 0):.0%})")
-    else:
+    elif terminal_state == "done":
         print("Tidak ada temuan kerentanan yang terdeteksi.")
+    else:
+        print(f"Pemeriksaan dihentikan pada status: {terminal_state.upper()}")
     print("=" * 65)
 
-    # 6. Format Markdown Report
-    markdown_report = build_markdown_report(args.target_url, scan_data, failed, fail_reason)
+    # 6. Format Markdown Report & Tulis Output
+    markdown_report = build_markdown_report(args.target_url, safe_scan_data, failed, fail_reason)
 
-    # Tulis ke file JSON jika diminta
     if args.output_json:
         try:
             with open(args.output_json, "w", encoding="utf-8") as f:
-                json.dump(scan_data, f, indent=2)
+                json.dump(safe_scan_data, f, indent=2)
             print(f"[+] Laporan JSON disimpan di: {args.output_json}")
         except OSError as e:
             print(f"[!] Gagal menyimpan laporan JSON: {e}")
 
-    # Tulis ke file Markdown jika diminta
     if args.output_md:
         try:
             with open(args.output_md, "w", encoding="utf-8") as f:
@@ -348,7 +453,6 @@ def main() -> int:
         except OSError as e:
             print(f"[!] Gagal menyimpan laporan Markdown: {e}")
 
-    # Tulis ke GitHub Actions Step Summary jika environment variable tersedia
     step_summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if step_summary_path:
         try:
@@ -358,13 +462,7 @@ def main() -> int:
         except OSError as e:
             print(f"[!] Gagal menulis ke GITHUB_STEP_SUMMARY: {e}")
 
-    # 7. Penentuan exit code
-    if failed:
-        print(f"\n❌ [CI FAILED] {fail_reason}")
-        return 1
-
-    print(f"\n✅ [CI PASSED] Pemindaian keamanan memenuhi ambang batas ({args.fail_on.upper()}).")
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

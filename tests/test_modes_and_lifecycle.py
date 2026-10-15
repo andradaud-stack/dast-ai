@@ -205,3 +205,68 @@ def test_invalid_exclusion_pattern_rejected():
             extra_excludes=["[unclosed-regex("],
         )
 
+
+def test_coverage_metrics_truthful_accounting_and_limitations():
+    """
+    Memverifikasi akurasi semantik metrik coverage:
+    - Membedakan URL yang ditemukan, diminta, dan endpoint yang menerima inspeksi
+    - Mencatat bukti transaksi HTTP ZAP jika tersedia
+    - Melampirkan batasan semantik secara eksplisit
+    """
+    mock_health = TargetHealth(accessible=True, status_code=200, diagnostic_message="OK")
+    mock_zap = MagicMock()
+    mock_zap.spider.scan.return_value = "1"
+    mock_zap.spider.status.return_value = 100
+    mock_zap.spider.results.return_value = [
+        "http://localhost:8000/app",
+        "http://localhost:8000/about",
+    ]
+    mock_zap.core.urls.return_value = ["http://localhost:8000/api/items"]
+    mock_zap.core.number_of_messages.return_value = "42"
+    mock_zap.core.messages.return_value = [
+        {"statusCode": "200"},
+        {"statusCode": "200"},
+        {"statusCode": "404"},
+    ]
+    mock_zap.pscan.records_to_scan = 0
+    mock_zap.core.alerts.return_value = []
+
+    with patch("app.zap_client.check_target_health", return_value=mock_health), \
+         patch("app.zap_client.check_zap_connectivity", return_value=True), \
+         patch("app.zap_client._zap", return_value=mock_zap):
+
+        res = execute_scan("http://localhost:8000", scan_mode="passive")
+
+        assert res.coverage.total_urls_discovered >= 3
+        assert res.coverage.total_urls_requested >= 2
+        assert "/about" in res.coverage.endpoints_tested
+        assert "/api/items" in res.coverage.endpoints_tested
+        assert res.coverage.total_messages_recorded == 42
+        assert res.coverage.requests_succeeded == 2
+        assert res.coverage.requests_failed == 1
+        assert any("Catatan Cakupan:" in lim for lim in res.limitations)
+        assert any("Bukti Transaksi: Tercatat 42" in lim for lim in res.limitations)
+
+
+def test_coverage_metrics_fallback_when_messages_unparseable():
+    """Memverifikasi bahwa jika status code tidak dapat dibedah, tidak ada klaim kelulusan palsu."""
+    mock_health = TargetHealth(accessible=True, status_code=200, diagnostic_message="OK")
+    mock_zap = MagicMock()
+    mock_zap.spider.scan.return_value = "1"
+    mock_zap.spider.status.return_value = 100
+    mock_zap.spider.results.return_value = ["http://localhost:8000/"]
+    mock_zap.core.urls.return_value = ["http://localhost:8000/"]
+    mock_zap.core.number_of_messages.return_value = "10"
+    mock_zap.core.messages.side_effect = Exception("ZAP API error on messages")
+    mock_zap.pscan.records_to_scan = 0
+    mock_zap.core.alerts.return_value = []
+
+    with patch("app.zap_client.check_target_health", return_value=mock_health), \
+         patch("app.zap_client.check_zap_connectivity", return_value=True), \
+         patch("app.zap_client._zap", return_value=mock_zap):
+
+        res = execute_scan("http://localhost:8000", scan_mode="passive")
+
+        assert res.coverage.total_messages_recorded == 10
+        assert res.coverage.requests_succeeded == 0
+        assert any("total transaksi HTTP ZAP; status per-pesan tidak diverifikasi" in lim for lim in res.limitations)

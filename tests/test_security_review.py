@@ -37,6 +37,46 @@ def test_zap_and_llm_api_keys_literally_redacted(monkeypatch):
     assert "sk-ant-test-super-secret-key" not in cleaned
 
 
+def test_vercel_protection_and_api_auth_token_literally_redacted(monkeypatch):
+    """Pastikan Vercel protection secret dan API auth token disensor secara literal tanpa label header."""
+    v_secret = "vercel-sec-token-strictly-hidden-8833"
+    api_token = "api-bearer-auth-strictly-hidden-9944"
+    monkeypatch.setattr(settings, "vercel_protection_bypass_secret", v_secret)
+    monkeypatch.setattr(settings, "api_auth_token", api_token)
+
+    # Uji dalam teks tanpa label header (bare literal)
+    raw_text = f"Stacktrace dump containing {v_secret} and auth token {api_token} from unhandled error."
+    cleaned = _clean(raw_text, limit=500)
+
+    assert v_secret not in cleaned
+    assert api_token not in cleaned
+    assert "[REDACTED_SECRET]" in cleaned
+
+
+def test_empty_secrets_do_not_break_sanitization(monkeypatch):
+    """Pastikan bahwa nilai rahasia kosong pada konfigurasi tidak merusak sanitasi teks biasa."""
+    monkeypatch.setattr(settings, "vercel_bypass_secret", "")
+    monkeypatch.setattr(settings, "vercel_protection_bypass_secret", "")
+    monkeypatch.setattr(settings, "zap_api_key", "")
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    monkeypatch.setattr(settings, "api_auth_token", "")
+
+    sample_text = "Standard response text without secrets."
+    cleaned = _clean(sample_text, limit=500)
+    assert cleaned == sample_text
+
+
+def test_sanitizer_preserves_truncation_with_secrets(monkeypatch):
+    """Pastikan pemotongan batas limit karakter tetap berjalan saat redaksi secret terjadi."""
+    secret = "my-long-secret-key-123456789"
+    monkeypatch.setattr(settings, "api_auth_token", secret)
+
+    raw_text = f"prefix_{secret}_" + ("A" * 100)
+    cleaned = _clean(raw_text, limit=30)
+    assert len(cleaned) <= 30
+    assert secret not in cleaned
+
+
 # =====================================================================
 # 2. TEST ALLOWLIST WILDCARD & HOSTNAME OUT-OF-SCOPE
 # =====================================================================

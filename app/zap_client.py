@@ -500,6 +500,74 @@ def execute_scan(
     coverage.total_endpoints_tested = len(endpoints)
     coverage.duration_seconds = durations
 
+    # Catat bukti transaksi HTTP riil dari ZAP core jika tersedia (Priority 2 / Truthful metrics)
+    total_msgs = 0
+    try:
+        if hasattr(zap_instance.core, "number_of_messages"):
+            msg_count = zap_instance.core.number_of_messages(baseurl=target)
+            if msg_count and str(msg_count).isdigit():
+                total_msgs = int(msg_count)
+                coverage.total_messages_recorded = total_msgs
+    except Exception as e:
+        logger.debug("Gagal mengambil number_of_messages dari ZAP: %s", e)
+
+    # Verifikasi status transaksi HTTP aktual dari ZAP core messages jika tersedia
+    try:
+        if hasattr(zap_instance.core, "messages") and total_msgs > 0:
+            msgs = zap_instance.core.messages(baseurl=target, start=0, count=min(total_msgs, 500))
+            if isinstance(msgs, list) and msgs:
+                succ = 0
+                fail = 0
+                block = 0
+                for m in msgs:
+                    if isinstance(m, dict):
+                        sc = m.get("statusCode")
+                        if sc and str(sc).isdigit():
+                            code = int(sc)
+                        else:
+                            rh = m.get("responseHeader", "")
+                            first_line = rh.split("\r\n")[0] if rh else ""
+                            parts = first_line.split()
+                            code = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+
+                        if 200 <= code < 400:
+                            succ += 1
+                        elif code in (401, 403):
+                            block += 1
+                            fail += 1
+                        elif code >= 400:
+                            fail += 1
+
+                coverage.requests_succeeded = succ
+                coverage.requests_failed = fail
+                coverage.requests_blocked = block
+    except Exception as e:
+        logger.debug("Gagal membedah rincian status pesan HTTP dari ZAP: %s", e)
+
+    # Catatan semantik jujur untuk endpoints_tested
+    if scan_mode == "passive":
+        limitations.append(
+            f"Catatan Cakupan: {len(endpoints)} endpoint unik terdaftar menerima inspeksi pasif terhadap response HTTP spidering. TIDAK ADA active payload fuzzing/injection yang dikirim ke endpoint tersebut."
+        )
+    elif scan_mode in ("active", "full"):
+        limitations.append(
+            f"Catatan Cakupan: Active scanner mengeksekusi {active_rules_run} aturan pemeriksaan terhadap endpoint dalam scope."
+        )
+
+    if coverage.total_messages_recorded > 0:
+        if coverage.requests_succeeded > 0 or coverage.requests_failed > 0:
+            limitations.append(
+                f"Bukti Transaksi: Tercatat {coverage.total_messages_recorded} pesan HTTP pada basis data ZAP Core "
+                f"({coverage.requests_succeeded} berstatus sukses 2xx/3xx, {coverage.requests_failed} gagal/error)."
+            )
+        else:
+            limitations.append(
+                f"Bukti Transaksi: Tercatat {coverage.total_messages_recorded} pesan HTTP pada basis data ZAP Core "
+                f"(total transaksi HTTP ZAP; status per-pesan tidak diverifikasi secara terpisah)."
+            )
+    else:
+        limitations.append("Bukti Transaksi: Rincian total request HTTP individual per-endpoint tidak disediakan oleh API daemon ZAP.")
+
     if len(validated_list) <= 1 and coverage.spider_status == "completed":
         verdict = "inconclusive"
         limitations.append(
